@@ -263,11 +263,31 @@ Get `commit_id`: `gh pr view <N> --json headRefOid --jq .headRefOid` (validate `
 
 Write comments to a temp JSON file, pass via `--input`, clean up after.
 
-**Capture the posted review's `html_url`** from the API response and immediately open it in the user's default browser so they can see it without leaving their workflow:
+**Idempotency guard — run this BEFORE the POST.** The GitHub reviews API creates a new review on every POST with no deduplication. If this session previously posted a review (e.g., due to a retry or a parsing failure), the review is already live — do not POST again:
+
+```bash
+CURRENT_USER=$(gh api /user --jq .login 2>/dev/null)
+EXISTING_ID=$(gh api "/repos/{owner}/{repo}/pulls/{N}/reviews" \
+  --jq "[.[] | select(.user.login == \"${CURRENT_USER}\")] | last | .id // empty" 2>/dev/null)
+if [ -n "$EXISTING_ID" ]; then
+  REVIEW_URL="https://github.com/{owner}/{repo}/pull/{N}#pullrequestreview-${EXISTING_ID}"
+  echo "Review already posted (ID: $EXISTING_ID). Skipping duplicate POST."
+  open "$REVIEW_URL" 2>/dev/null || echo "Review URL: $REVIEW_URL"
+  # Jump to worktree cleanup — do NOT call POST below
+fi
+```
+
+**POST the review (only if no existing review was found above).** ⚠️ **NEVER call this endpoint more than once per run.** Once the response is captured, the review is live — if parsing fails, extract from the raw response without retrying POST:
 
 ```bash
 REVIEW_RESPONSE=$(gh api "/repos/{owner}/{repo}/pulls/{N}/reviews" --method POST --input "$TMP_JSON")
-REVIEW_URL=$(echo "$REVIEW_RESPONSE" | jq -r '.html_url')
+
+# Extract URL with jq; fall back to grep+construct if jq fails (e.g., Unicode in body)
+REVIEW_ID=$(echo "$REVIEW_RESPONSE" | grep -o '"id":[0-9]*' | head -1 | sed 's/"id"://')
+REVIEW_URL=$(echo "$REVIEW_RESPONSE" | jq -r '.html_url' 2>/dev/null)
+if [ -z "$REVIEW_URL" ] || [ "$REVIEW_URL" = "null" ]; then
+  REVIEW_URL="https://github.com/{owner}/{repo}/pull/{N}#pullrequestreview-${REVIEW_ID}"
+fi
 
 # Open in browser (cross-platform fallback chain)
 if [ -n "$REVIEW_URL" ] && [ "$REVIEW_URL" != "null" ]; then
