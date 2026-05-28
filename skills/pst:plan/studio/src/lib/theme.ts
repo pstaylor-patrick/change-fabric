@@ -125,6 +125,21 @@ export const THEMES = {
   },
 } satisfies Record<string, Theme>;
 
+/**
+ * Solid card colors for <Stat color="…"> (the "big stockpiles" cards). White
+ * text sits on these, so each must clear WCAG AA (>=4.5) against white — see
+ * src/a11y.test.ts. `ochre` was darkened from #b08227 (only 3.5:1) to pass.
+ */
+export const STAT_COLORS = {
+  clay: "#9c4221",
+  forest: "#2f5d3a",
+  slate: "#395673",
+  ochre: "#8a6418",
+  plum: "#6d3b63",
+} as const;
+
+export type StatColor = keyof typeof STAT_COLORS;
+
 export type ThemeKey = keyof typeof THEMES;
 
 export const THEME_KEYS = Object.keys(THEMES) as [ThemeKey, ...ThemeKey[]];

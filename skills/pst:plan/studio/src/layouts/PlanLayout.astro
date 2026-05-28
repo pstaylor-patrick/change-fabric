@@ -36,6 +36,7 @@ const dateLabel = stamp
       year: "numeric",
       month: "short",
       day: "numeric",
+      timeZone: "UTC",
     })
   : null;
 const analytics = !import.meta.env.DEV && cfg.analyticsEndpoint ? cfg.analyticsEndpoint : "";

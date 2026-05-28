@@ -2,29 +2,18 @@
 // One headline metric. Inside a <Stats variant="cards">, give it a `color` for
 // the solid colored-card look (clay/forest/slate/ochre/plum/accent). Inside a
 // <Stats variant="divided"> leave color unset for the quiet hairline cell.
+// White text on every card color clears WCAG AA — enforced by src/a11y.test.ts.
+import { STAT_COLORS, type StatColor } from "@lib/theme";
+
 interface Props {
   value: string | number;
   label: string;
   // Small italic annotation under the label (e.g. "an actual flock").
   note?: string;
-  color?:
-    | "clay"
-    | "forest"
-    | "slate"
-    | "ochre"
-    | "plum"
-    | "accent"
-    | "surface";
+  color?: StatColor | "accent" | "surface";
   anchor?: string;
 }
 const { value, label, note, color, anchor } = Astro.props;
-const COLORS: Record<string, string> = {
-  clay: "#9c4221",
-  forest: "#2f5d3a",
-  slate: "#395673",
-  ochre: "#b08227",
-  plum: "#6d3b63",
-};
 const isCard = color !== undefined;
 const bg =
   color === "accent"
@@ -32,10 +21,11 @@ const bg =
     : color === "surface"
       ? "var(--surface)"
       : color
-        ? COLORS[color]
+        ? STAT_COLORS[color]
         : "var(--surface)";
 const light = color === "surface" || color === undefined;
-const style = `--stat-bg:${bg};--stat-fg:${light ? "var(--text)" : "#fff"};--stat-muted:${light ? "var(--muted)" : "rgba(255,255,255,.78)"}`;
+// Notes on colored cards stay high-opacity so the small italic still clears AA.
+const style = `--stat-bg:${bg};--stat-fg:${light ? "var(--text)" : "#fff"};--stat-muted:${light ? "var(--muted)" : "rgba(255,255,255,.9)"}`;
 ---
 
 <div

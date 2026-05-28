@@ -115,27 +115,33 @@ const hasFigure = Astro.slots.has("figure") && treatment !== "framed";
     border-bottom: 1px solid var(--border);
   }
   .t-gradient {
+    /* Dark -> accent only. Never lighter than the accent itself, so white text
+       anywhere on the hero clears the same contrast as white-on-accent (which
+       src/a11y.test.ts pins at >= AA). The old version blended toward white at
+       the bottom, which made the small meta labels fail contrast. */
     background:
       linear-gradient(
-        135deg,
-        color-mix(in srgb, var(--accent) 90%, #000) 0%,
-        var(--accent) 55%,
-        color-mix(in srgb, var(--accent) 55%, #fff) 100%
+        140deg,
+        color-mix(in srgb, var(--accent) 68%, #000) 0%,
+        var(--accent) 100%
       );
     color: var(--accent-text);
   }
-  .t-gradient .eyebrow,
   .t-gradient .sub {
-    color: color-mix(in srgb, var(--accent-text) 82%, transparent);
+    color: color-mix(in srgb, var(--accent-text) 92%, transparent);
   }
-  .t-gradient h1 em {
-    color: color-mix(in srgb, var(--accent-text) 88%, transparent);
-  }
+  .t-gradient .eyebrow,
+  .t-gradient h1 em,
   .t-gradient dt {
-    color: color-mix(in srgb, var(--accent-text) 70%, transparent);
+    color: var(--accent-text);
   }
   .t-gradient .meta {
-    border-color: color-mix(in srgb, var(--accent-text) 25%, transparent);
+    border-color: color-mix(in srgb, var(--accent-text) 35%, transparent);
+  }
+  /* The tinted global selection is invisible on the gradient; make it legible. */
+  .t-gradient ::selection {
+    background: rgba(255, 255, 255, 0.85);
+    color: #1f1b16;
   }
   .t-rule {
     border-top: 4px solid var(--accent);

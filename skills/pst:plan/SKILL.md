@@ -1,7 +1,7 @@
 ---
 name: pst:plan
 description: Turn a plan into a bespoke interactive artifact in the Astro studio — click-anywhere comments, one-command publish.
-argument-hint: '[<plan.md>] [--exec] [--theme <name>] [--title "..."] [--no-open] | --feedback <id> | --publish <id> | --list'
+argument-hint: '[<plan.md>] [--exec] [--theme <name>] [--ttl <7|30d|never>] [--title "..."] | <id|url> (iterate) | --feedback <id> | --publish <id|url> [--ttl …] | --destroy <id> | --list'
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
 
@@ -32,8 +32,18 @@ no interview.
 # Revise an existing artifact from the comments you left in the browser
 /pst:plan --feedback k3f9q2
 
-# Publish an artifact to your subdomain (needs plans.config.json + terraform apply)
+# Publish to your subdomain (default 7-day TTL; needs plans.config.json + terraform)
 /pst:plan --publish k3f9q2
+/pst:plan --publish k3f9q2 --ttl 30d        # 30 days
+/pst:plan --publish k3f9q2 --ttl never      # keep forever
+
+# Iterate on a published artifact from ANY session — pass its id or URL.
+# Same id/URL is preserved; it's updated in place.
+/pst:plan k3f9q2 "make the hero calmer and tighten the steps"
+/pst:plan https://artifacts.pstaylor.net/p/k3f9q2/whatever "fix the third stat"
+
+# Destroy one now (the reaper also auto-destroys at TTL)
+/pst:plan --destroy k3f9q2
 
 # List existing artifacts
 /pst:plan --list
@@ -42,7 +52,8 @@ no interview.
 **Defaults when bare:** source = the most recent plan / recommended next steps in
 the current conversation; theme auto-chosen to fit the topic; opens `astro dev`
 in the browser at the new artifact. Publishing is opt-in and only lights up once
-`plans.config.json` exists.
+`plans.config.json` exists. **Published artifacts self-destruct after 7 days by
+default** — pass `--ttl` to change it.
 
 ## Resolve the skill directory first
 
@@ -76,9 +87,14 @@ Card/CardGrid, Compare, Ledger, Mockup, Diagram, Callout, Pill, Link, Icon`).
 ### 1. Parse arguments
 
 - `--feedback <id>` → jump to **Revise** flow.
-- `--publish <id>` → jump to **Publish** flow.
+- `--publish <id|url>` → jump to **Publish** flow.
+- `--destroy <id|url>` → jump to **Destroy** flow.
 - `--list` → `ls "$PLANS"` and print each id + title; stop.
-- `<*.md>` positional → read that file as the source plan.
+- **An existing id or a published URL as the first token** (matches a 4–8 char
+  id, or contains `/p/<id>/`) → **Iterate-in-place** flow: extract the id, edit
+  that artifact, re-publish under the **same id**. Any extra prose is the change
+  request.
+- `<*.md>` positional → read that file as the source plan (new artifact).
 - No positional → use the **most recent plan / recommended next steps from the
   current conversation** as the source. Set `sourcePath` to a short note.
 - `--exec` → executive-summary preset: synthesize from the conversation an
@@ -86,6 +102,11 @@ Card/CardGrid, Compare, Ledger, Mockup, Diagram, Callout, Pill, Link, Icon`).
   `Steps`, optional decisions/risks `Card`s). Crisp, stakeholder-facing.
 - `--theme <name>` to force art direction; `--title "..."` to override; `--no-open`
   to skip the browser.
+- `--ttl <value>` → time-to-live for a publish. The value is fuzzy and you
+  interpret it: a bare number means **days** (`7`, `30`); `30d`/`2w`/`"two weeks"`
+  → that many days; `never`/`forever`/`∞`/`keep` → never expires. Normalize to
+  either an integer (days) or the literal `never`, then pass to `publish.py`.
+  **Default is 7 days** when omitted on a first publish.
 
 ### 2. Pick an id + slug
 
@@ -130,16 +151,56 @@ Read `$STUDIO/feedback/<id>.json` (threads the user dropped in the browser; each
 has `anchor`, `section`, `selector`, `snippet`, `comment`). Apply each comment by
 editing `$PLANS/<id>.mdx`, then tell the user to refresh. Keep the id stable.
 
-### 6. Publish flow (`--publish <id>`)
+### 6. Publish flow (`--publish <id|url>`)
 
 ```bash
-python3 "$SKILL_DIR/scripts/publish.py" --skill-dir "$SKILL_DIR" --id "<id>"
+# --ttl is optional: integer days or "never". Omit to keep the artifact's
+# current expiry (or default to 7 days on a first publish).
+python3 "$SKILL_DIR/scripts/publish.py" --skill-dir "$SKILL_DIR" --id "<id>" [--ttl <days|never>]
 ```
 
 Requires `plans.config.json` (copy from `plans.config.example.json`) and a
-one-time `terraform apply` in `terraform/`. The script builds, syncs to S3, finds
-the CloudFront distribution by domain alias, invalidates, and prints the URL
-`https://<domain>/p/<id>/<slug>`.
+one-time `terraform apply` in `terraform/`. The script runs the a11y contrast
+gate, builds, uploads **just this artifact** (so other artifacts' expiry tags are
+untouched), stashes the MDX source privately to S3 for later iteration, tags the
+page with its expiry, invalidates CloudFront, and prints the URL + expiry. The
+URL is `https://<domain>/p/<id>/<slug>` — the id is canonical; the slug cosmetic.
+
+**TTL / self-destruct.** Every published artifact carries an `expires-at` tag. A
+daily reaper (Terraform-provisioned, on by default) **deletes expired artifacts
+outright from S3** and invalidates them. Default lifetime is **7 days**; `--ttl
+never` opts out. Re-publishing without `--ttl` preserves the current expiry, so
+iterating doesn't silently shorten or extend a shared link's life.
+
+### 6b. Iterate-in-place flow (id or URL, from any session)
+
+The point: workshop a published artifact over many sessions/machines **without
+changing its id or URL**. Given an id or a `…/p/<id>/…` URL:
+
+```bash
+ID="<extracted id>"
+SRC="$PLANS/$ID.mdx"
+# If this clone doesn't have the source, pull the copy publish.py stashed in S3.
+if [ ! -f "$SRC" ]; then
+  BUCKET=$(python3 -c "import json,sys;print(json.load(open('$SKILL_DIR/plans.config.json'))['domain'])")
+  PROFILE=$(python3 -c "import json,sys;print(json.load(open('$SKILL_DIR/plans.config.json'))['awsProfile'])")
+  aws s3 cp "s3://$BUCKET/p/$ID/_source.mdx" "$SRC" --profile "$PROFILE"
+fi
+```
+
+Then **edit `$SRC` in place** to apply the requested change, and re-publish with
+the **same id** (Step 6, no `--ttl` unless asked → expiry preserved). The id,
+URL, and lifetime stay stable; only the content changes. If the source can't be
+recovered (never published, or a different bucket), say so rather than guessing.
+
+### 6c. Destroy flow (`--destroy <id|url>`)
+
+```bash
+python3 "$SKILL_DIR/scripts/publish.py" --skill-dir "$SKILL_DIR" --id "<id>" --destroy
+```
+
+Immediately removes the artifact's `/p/<id>/` prefix from S3 and invalidates it —
+the same thing the reaper does at TTL, on demand.
 
 ### 7. Report back
 
@@ -168,6 +229,11 @@ a clean footer. Production-ready, not tossed-up.
 - **Light themes only** — never emit a dark background.
 - **Show, don't tell** — prefer a `Diagram`/`Mockup`/`Stats` over another paragraph.
 - **Compose the kit; don't freehand HTML/CSS.** Re-read the kit props instead of guessing.
+- **Contrast is enforced.** Theme/kit colors are gated by `studio/src/a11y.test.ts`
+  (WCAG AA), which `publish.py` runs before every build. If you add a color or a
+  new on-color combination, add it to that test; never hand-tune colors that
+  dodge it. For a deeper DOM-level audit of a built page, run `/servant:accessibility`
+  (axe via Playwright) against the dev server.
 
 ## Constraints
 

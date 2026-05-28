@@ -32,10 +32,25 @@ skills/pst:plan/
   persists to `studio/feedback/<id>.json` via a dev-only middleware endpoint.
 - **Revise** — `/pst:plan --feedback <id>` reads those threads back and edits the
   artifact. A real round-trip, not a clipboard paste.
-- **Publish** — `/pst:plan --publish <id>` builds the static site, syncs to S3,
-  and invalidates CloudFront. URLs are Amazon-style: `/p/<id>/<slug>` where the
-  short **id is canonical** and the **slug is cosmetic** (a CloudFront function
-  strips it, so typos and renames still resolve). Pages are **no-index** by default.
+- **Publish** — `/pst:plan --publish <id>` runs the WCAG contrast gate, builds the
+  static site, syncs to S3, and invalidates CloudFront. URLs are Amazon-style:
+  `/p/<id>/<slug>` where the short **id is canonical** and the **slug is cosmetic**
+  (a CloudFront function strips it, so typos and renames still resolve). Pages are
+  **no-index** by default.
+- **Iterate** — pass an existing id or URL from _any_ session
+  (`/pst:plan <id> "tighten the hero"`); publish stashes the MDX source in S3, so
+  it's fetched, edited, and re-published **under the same id/URL**.
+- **Self-destruct (TTL)** — published artifacts carry an `expires-at` tag and a
+  daily reaper (on by default) **deletes expired ones outright from S3**. Default
+  lifetime **7 days**; `--ttl 30d` / `--ttl never` to change. `--destroy <id>`
+  removes one immediately.
+
+### Accessibility
+
+`studio/src/a11y.test.ts` is a deterministic WCAG AA contrast gate over the theme
+palette; `publish.py` runs it before every build, so a contrast regression blocks
+publishing. For deep DOM audits, run an axe pass (e.g. `/servant:accessibility`)
+against the dev server.
 
 ## Bring your own domain + AWS account
 

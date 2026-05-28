@@ -23,8 +23,12 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+DEFAULT_TTL_DAYS = 7
+NEVER = "never"
 
 __all__ = ["Config", "load_config", "discover_distribution_id", "read_slug"]
 
@@ -119,10 +123,98 @@ def _build_env(studio: Path) -> dict[str, str]:
     return env
 
 
+def parse_ttl(value: str) -> str:
+    """Normalize a --ttl value to an expiry: an ISO-8601 UTC instant, or "never".
+    Accepts a bare number of days, "<n>d", or never/forever/none/0."""
+    v = value.strip().lower()
+    if v in {NEVER, "none", "forever", "infinite", "inf", "0", ""}:
+        return NEVER
+    match = re.fullmatch(r"(\d+)\s*d?", v)
+    if not match:
+        _fail(2, f"--ttl must be a number of days or 'never' (got {value!r})")
+    days = int(match.group(1))
+    if days <= 0:
+        return NEVER
+    when = datetime.now(timezone.utc) + timedelta(days=days)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def existing_expiry(cfg: Config, artifact_id: str) -> Optional[str]:
+    """Read the current `expires-at` tag of a published artifact, if any."""
+    res = subprocess.run(
+        [
+            "aws", "s3api", "get-object-tagging",
+            "--bucket", cfg.bucket, "--key", f"p/{artifact_id}/index.html",
+            "--profile", cfg.profile, "--output", "json",
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    if res.returncode != 0:
+        return None
+    try:
+        tags = json.loads(res.stdout or "{}").get("TagSet", [])
+    except json.JSONDecodeError:
+        return None
+    for tag in tags:
+        if tag.get("Key") == "expires-at":
+            return tag.get("Value")
+    return None
+
+
+def _cp(src: str, key: str, cfg: Config, *extra: str) -> None:
+    _run([
+        "aws", "s3", "cp", src, f"s3://{cfg.bucket}/{key}",
+        "--profile", cfg.profile, *extra,
+    ])
+
+
+def _invalidate(cfg: Config, paths: list[str]) -> None:
+    dist_id = discover_distribution_id(cfg)
+    if dist_id is None:
+        _fail(3, f"no CloudFront distribution with alias {cfg.domain}. terraform apply first.")
+    _run([
+        "aws", "cloudfront", "create-invalidation", "--distribution-id", dist_id,
+        "--paths", *paths, "--profile", cfg.profile,
+    ])
+
+
+def destroy(cfg: Config, artifact_id: str) -> None:
+    """Manually self-destruct one artifact now (the reaper does this on expiry)."""
+    print(f"Destroying https://{cfg.domain}/p/{artifact_id} …")
+    _run([
+        "aws", "s3", "rm", f"s3://{cfg.bucket}/p/{artifact_id}/",
+        "--recursive", "--profile", cfg.profile,
+    ])
+    _invalidate(cfg, [f"/p/{artifact_id}/*", "/", "/index.html"])
+    print(f"Destroyed: /p/{artifact_id} is gone from S3.")
+
+
+def run_a11y_gate(studio: Path) -> None:
+    """Block publish on any WCAG AA contrast regression (src/a11y.test.ts)."""
+    vitest = studio / "node_modules" / ".bin" / "vitest"
+    if not vitest.exists():
+        print("  (a11y gate skipped — vitest not installed)")
+        return
+    print("  $ a11y contrast gate")
+    res = subprocess.run(
+        [str(vitest), "run", "src/a11y.test.ts"], cwd=studio, check=False
+    )
+    if res.returncode != 0:
+        _fail(3, "a11y contrast gate failed — fix theme/contrast before publishing.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skill-dir", required=True, type=Path)
-    parser.add_argument("--id", help="artifact id to print the URL for")
+    parser.add_argument("--id", help="artifact id (required to publish or destroy)")
+    parser.add_argument(
+        "--ttl",
+        help="time-to-live: a number of days, or 'never'. Default: keep existing, "
+        f"else {DEFAULT_TTL_DAYS} days. The skill normalizes fuzzy input.",
+    )
+    parser.add_argument(
+        "--destroy", action="store_true", help="delete the --id artifact from S3 now"
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -135,52 +227,87 @@ def main() -> int:
     if shutil.which("aws") is None:
         _fail(3, "the `aws` CLI is not on PATH.")
 
-    s3_uri = f"s3://{cfg.bucket}"
-    print(f"Publishing to https://{cfg.domain}  (bucket {cfg.bucket}, profile {cfg.profile})")
+    if args.destroy:
+        if not args.id:
+            _fail(2, "--destroy needs --id")
+        destroy(cfg, args.id)
+        return 0
+
+    if not args.id:
+        _fail(2, "--id is required to publish (the artifact's short id).")
+
+    # Resolve expiry: explicit --ttl wins; else keep the artifact's current
+    # expiry; else the default window. Re-publishing thus never silently changes
+    # an artifact's lifetime.
+    if args.ttl is not None:
+        expiry = parse_ttl(args.ttl)
+    else:
+        expiry = existing_expiry(cfg, args.id) or parse_ttl(str(DEFAULT_TTL_DAYS))
+
+    slug = read_slug(plans_dir, args.id)
+    url = f"https://{cfg.domain}/p/{args.id}/{slug}"
+    src_mdx = next(
+        (plans_dir / f"{args.id}{ext}" for ext in (".mdx", ".md")
+         if (plans_dir / f"{args.id}{ext}").is_file()),
+        None,
+    )
+
+    print(f"Publishing {args.id} → {url}")
+    print(f"  expiry: {'never' if expiry == NEVER else expiry}")
 
     if args.dry_run:
-        print("  [dry-run] npm run build")
-        print(f"  [dry-run] aws s3 sync {dist} {s3_uri} --delete")
-        print("  [dry-run] discover distribution by alias + invalidate /*")
-    else:
-        # Prefer the local astro binary directly — some environments' `npm run`
-        # doesn't put node_modules/.bin on PATH. Fall back to the npm script.
-        astro_bin = studio / "node_modules" / ".bin" / "astro"
-        if astro_bin.exists():
-            _run([str(astro_bin), "build"], cwd=studio)
-        else:
-            _run(["npm", "run", "build"], cwd=studio, env=_build_env(studio))
-        if not dist.is_dir():
-            _fail(3, f"build produced no dist/ at {dist}")
-        # Hashed assets are immutable; HTML must revalidate.
-        _run([
-            "aws", "s3", "sync", str(dist), s3_uri, "--profile", cfg.profile,
-            "--delete", "--exclude", "*.html",
-            "--cache-control", "public,max-age=31536000,immutable",
-        ])
-        _run([
-            "aws", "s3", "sync", str(dist), s3_uri, "--profile", cfg.profile,
-            "--exclude", "*", "--include", "*.html",
-            "--cache-control", "public,max-age=0,must-revalidate",
-            "--content-type", "text/html; charset=utf-8",
-        ])
-        dist_id = discover_distribution_id(cfg)
-        if dist_id is None:
-            _fail(
-                3,
-                f"no CloudFront distribution found with alias {cfg.domain}. "
-                "Run terraform apply first.",
-            )
-        _run([
-            "aws", "cloudfront", "create-invalidation",
-            "--distribution-id", dist_id, "--paths", "/*", "--profile", cfg.profile,
-        ])
+        print("  [dry-run] a11y gate, build, upload artifact + source, tag, invalidate")
+        print(f"\nWould publish: {url}")
+        return 0
 
-    if args.id:
-        slug = read_slug(plans_dir, args.id)
-        print(f"\nPublished: https://{cfg.domain}/p/{args.id}/{slug}")
+    run_a11y_gate(studio)
+
+    astro_bin = studio / "node_modules" / ".bin" / "astro"
+    if astro_bin.exists():
+        _run([str(astro_bin), "build"], cwd=studio)
     else:
-        print(f"\nPublished. Browse: https://{cfg.domain}/")
+        _run(["npm", "run", "build"], cwd=studio, env=_build_env(studio))
+
+    art_html = dist / "p" / args.id / "index.html"
+    if not art_html.is_file():
+        _fail(3, f"build produced no page for {args.id} at {art_html}")
+
+    # Immutable shared assets (no per-object tags; never reaped).
+    _run([
+        "aws", "s3", "sync", str(dist / "_astro"), f"s3://{cfg.bucket}/_astro",
+        "--profile", cfg.profile, "--size-only",
+        "--cache-control", "public,max-age=31536000,immutable",
+    ])
+    # The artifact page (targeted cp so other artifacts' expiry tags are untouched).
+    _cp(str(art_html), f"p/{args.id}/index.html", cfg,
+        "--cache-control", "public,max-age=0,must-revalidate",
+        "--content-type", "text/html; charset=utf-8")
+    # Stash the MDX source privately so any future session can fetch + edit it.
+    if src_mdx is not None:
+        _cp(str(src_mdx), f"p/{args.id}/_source.mdx", cfg,
+            "--content-type", "text/markdown")
+    # Refresh the gallery + 404.
+    _cp(str(dist / "index.html"), "index.html", cfg,
+        "--cache-control", "public,max-age=0,must-revalidate",
+        "--content-type", "text/html; charset=utf-8")
+    if (dist / "404.html").is_file():
+        _cp(str(dist / "404.html"), "404.html", cfg,
+            "--content-type", "text/html; charset=utf-8")
+
+    # Tag the page with its expiry — the reaper reads this to self-destruct it.
+    _run([
+        "aws", "s3api", "put-object-tagging", "--bucket", cfg.bucket,
+        "--key", f"p/{args.id}/index.html", "--profile", cfg.profile,
+        "--tagging", f"TagSet=[{{Key=expires-at,Value={expiry}}}]",
+    ])
+
+    _invalidate(cfg, [f"/p/{args.id}/*", "/", "/index.html"])
+
+    print(f"\nPublished: {url}")
+    if expiry == NEVER:
+        print("Expiry: never (lives until you --destroy it).")
+    else:
+        print(f"Expiry: {expiry} — self-destructs after that (daily reaper).")
     return 0
 
 

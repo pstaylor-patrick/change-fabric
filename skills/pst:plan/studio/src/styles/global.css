@@ -64,6 +64,14 @@ body {
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Fraunces (and friends) ship swashy connecting ligatures (ct, ft, st) as
+     discretionary/contextual features; keep standard ligatures but turn those
+     off so letterforms read plainly in display type. */
+  font-variant-ligatures: common-ligatures no-discretionary-ligatures;
+  font-feature-settings:
+    "dlig" 0,
+    "clig" 0,
+    "calt" 0;
 }
 
 h1,
