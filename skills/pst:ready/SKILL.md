@@ -71,13 +71,23 @@ continue in read-only mode through all phases.
 
 ## Phase T -- Repair Tournament
 
-Spawn **3 foreground Sonnet agents** in a single response turn
-(`isolation: worktree`, no `run_in_background`). They run concurrently and all
-must finish before the judge.
+**Phase T setup:** Create 3 isolated sub-worktrees of the PR repo before
+spawning agents:
+
+```bash
+git -C "$WORK_DIR" worktree add "$WORK_DIR/.tournament/strategy-a" "$HEAD_BRANCH"
+git -C "$WORK_DIR" worktree add "$WORK_DIR/.tournament/strategy-b" "$HEAD_BRANCH"
+git -C "$WORK_DIR" worktree add "$WORK_DIR/.tournament/strategy-c" "$HEAD_BRANCH"
+```
+
+Spawn **3 foreground Sonnet agents** in a single response turn (no
+`run_in_background`). They run concurrently and all must finish before the
+judge. Do NOT use `isolation: worktree` -- each agent gets its own PR-repo
+sub-worktree, not an isolation of the skills repo.
 
 Each agent receives: `PR_URL`, `PR_NUMBER`, `HEAD_BRANCH`, `BASE_BRANCH`,
-`HEAD_SHA`, `WORK_DIR`, `MAX_CI_ATTEMPTS`, `MAX_REVIEW_ROUNDS`, and its
-strategy directive.
+`HEAD_SHA`, `WORK_DIR`, `AGENT_WORK_DIR` (its sub-worktree path),
+`MAX_CI_ATTEMPTS`, `MAX_REVIEW_ROUNDS`, and its strategy directive.
 
 ### Strategy A -- Conservative
 
@@ -86,6 +96,10 @@ strategy directive.
 - Threads: run `pst:resolve-threads` for bot-posted threads only
   (`github-actions[bot]`, `codex`, `copilot-pull-request-reviewer`).
 - Skip the adversarial code-review settling loop.
+- All git operations are local to your AGENT_WORK_DIR. Do NOT push to remote.
+  Do NOT invoke sub-skills that push (pst:rebase, pst:resolve-threads,
+  pst:code-review are allowed read-only or with --no-push; check each before
+  calling). The orchestrator handles the push after cherry-picking the winner.
 
 ### Strategy B -- Structural
 
@@ -93,6 +107,10 @@ strategy directive.
 - Parallel CI-fix sub-agents, one per failing check.
 - After CI is green, run `pst:resolve-threads` and `pst:code-review --sweep`
   in parallel.
+- All git operations are local to your AGENT_WORK_DIR. Do NOT push to remote.
+  Do NOT invoke sub-skills that push (pst:rebase, pst:resolve-threads,
+  pst:code-review are allowed read-only or with --no-push; check each before
+  calling). The orchestrator handles the push after cherry-picking the winner.
 
 ### Strategy C -- Review-first
 
@@ -101,6 +119,10 @@ strategy directive.
 - Resolve only threads that survive after code-review (skip threads that
   code-review would invalidate).
 - CI fix only for issues code-review explicitly flags as auto-fixable.
+- All git operations are local to your AGENT_WORK_DIR. Do NOT push to remote.
+  Do NOT invoke sub-skills that push (pst:rebase, pst:resolve-threads,
+  pst:code-review are allowed read-only or with --no-push; check each before
+  calling). The orchestrator handles the push after cherry-picking the winner.
 
 ### Required result block
 
@@ -111,13 +133,22 @@ Each agent must end its response with:
 STRATEGY: <A|B|C>
 STATUS: ready | blocked: <reason>
 HEAD_SHA: <full 40-char sha from: git rev-parse HEAD>
+CI_ATTEMPTS: <integer: how many CI fix passes were run>
+OPEN_THREADS: <integer: from gh api graphql reviewThreads where isResolved=false>
+DIFF_STAT:
+<output of: git diff --stat origin/$BASE_BRANCH..HEAD>
 DIFF:
-<output of: git diff origin/main..HEAD>
+<output of: git diff origin/$BASE_BRANCH..HEAD | head -n 500>
 ---end-ready-result---
 ```
 
 If **all 3 agents** are `blocked`, report all reasons and stop. Do not advance
 to the judge.
+
+After each tournament agent returns, append its parsed result to the progress
+file under key `tournament_results.{A|B|C}`. On resume within Phase T, read
+`tournament_results` from the progress file and only re-spawn missing strategies
+(those not already present in the progress file).
 
 ---
 
@@ -127,8 +158,9 @@ Parse every `---ready-result---` block. Collect diffs for `STATUS: ready`
 agents. If exactly one agent is `ready`, skip the judge and use it as the
 winner.
 
-Otherwise, spawn one **background Opus agent** (`model: opus`) and **await its
-result** before Phase T.3. Agent input: all `ready` diffs plus this prompt:
+Otherwise, spawn one **foreground Opus agent** (`model: opus`) before Phase
+T.3. Agent input: all ready DIFF_STAT summaries and capped diffs (500 lines
+max per strategy) plus this prompt:
 
 > Score each strategy on three axes (1-5 each):
 >
@@ -168,8 +200,13 @@ git push --force-with-lease origin "$HEAD_BRANCH"
 HEAD_SHA=$(git rev-parse "origin/$HEAD_BRANCH")
 ```
 
-If cherry-pick conflicts, write the diff from the result block to
-`/tmp/pst-ready-winner.patch` and apply via `git apply`.
+If cherry-pick conflicts, abort and reset to the winner's branch:
+
+```bash
+git cherry-pick --abort
+git reset --hard $WINNER_SHA
+git push --force-with-lease origin "$HEAD_BRANCH"
+```
 
 ---
 
