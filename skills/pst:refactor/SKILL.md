@@ -97,70 +97,112 @@ Present smell count and N to the user via `AskUserQuestion`: "Run tournament
 with N=\<N\> implementations?" (Yes / Report only / Adjust N). If
 `--report-only` was passed, stop here without asking.
 
-## 5. Parallel implementation tournament (background)
+## 5. Parallel implementation tournament
 
-Spawn N background Sonnet agents (`model: sonnet`, `isolation: worktree`),
-each receiving the same smell findings and target files but a different
+Spawn N **foreground** Sonnet agents (`model: sonnet`, `isolation: worktree`) in
+the **same response turn** so they run concurrently. Do NOT set
+`run_in_background: true` -- all N must complete before Step 6 begins, and
+synchronization is implicit when they are foreground.
+
+Each agent receives the same smell findings and target files but a different
 strategy directive:
 
-- **Strategy A -- Conservative**: Fix only the highest-impact smells with the
-  smallest possible diff. Prefer inlining over new abstractions when the call
-  site is nearby. Preserve the existing module and file structure entirely.
-- **Strategy B -- Structural**: Reorganize by responsibility. Group related
-  behavior together even if it means creating new files or moving methods
-  between classes. Optimize for locality of future change.
-- **Strategy C -- Extract-first**: Create a named function, class, or module
-  for every smell instance. Err toward more abstractions with clear names.
-  Every duplicated concept gets a home.
+- **A -- Conservative**: Fix only the highest-impact smells with the smallest
+  possible diff. Prefer inlining over new abstractions. Preserve existing module
+  and file structure entirely.
+- **B -- Structural**: Reorganize by responsibility. Group related behavior
+  together even if it means creating new files or moving methods. Optimize for
+  locality of future change.
+- **C -- Extract-first**: Create a named function, class, or module for every
+  smell instance. Err toward more abstractions with clear names.
 
 If N=5, add:
 
-- **Strategy D -- Domain-model**: Look for primitive obsession and data clumps;
-  introduce domain objects or value types to make implicit business concepts
-  explicit.
-- **Strategy E -- Functional**: Prefer pure functions and immutable data where
-  the language supports it. Move state to the edges. Reduce side-effect surface.
+- **D -- Domain-model**: Look for primitive obsession and data clumps; introduce
+  domain objects or value types to make implicit business concepts explicit.
+- **E -- Functional**: Prefer pure functions and immutable data where the
+  language supports it. Move state to the edges. Reduce side-effect surface.
 
-Each agent must:
+Each agent must end its response with exactly this block so the orchestrator
+can collect results without accessing the worktree afterward:
+
+```
+---tournament-result---
+STRATEGY: <A|B|C|D|E>
+STATUS: committed
+COMMIT_SHA: <full 40-char sha from: git rev-parse HEAD>
+DIFF:
+<output of: git diff HEAD~1..HEAD>
+---end-tournament-result---
+```
+
+If the agent cannot commit (tests fail, conflict, or other error), emit:
+
+```
+---tournament-result---
+STRATEGY: <A|B|C|D|E>
+STATUS: skipped: <reason in one line>
+---end-tournament-result---
+```
+
+Steps each agent must follow:
 
 1. Apply its strategy to fix the smells in the target files.
 2. Run existing tests if present; skip any fix that breaks a test and note it.
-3. Stage and commit: `git add <changed files> && git commit -m "refactor(<strategy-name>): <primary smell fixed>"`.
+3. Stage and commit: `git add <changed files> && git commit -m "refactor(<strategy>): <primary smell fixed>"`.
 4. Include co-author trailer: `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`.
+5. Run `git rev-parse HEAD` and `git diff HEAD~1..HEAD`; include both verbatim in the result block.
 
-## 6. Opus judge selects winner (background)
+## 6. Opus judge selects winner
 
-After all N agents complete, spawn one background Opus agent (`model: opus`)
-with:
+After all N agents return (foreground means they are all done before this
+step begins), parse each `---tournament-result---` block. Collect the SHA and
+diff for every agent with `STATUS: committed`. If zero agents committed, report
+all skip reasons and stop.
 
-- All N diffs (collected via `git show HEAD` in each worktree).
-- The smell findings from step 2.
+Spawn one **foreground** Opus agent (`model: opus`) with:
+
+- All committed diffs (from the result blocks -- no worktree access needed).
+- The smell findings from Step 2.
 - The content of `MAINTAINABILITY.md`.
-- Instruction: evaluate each implementation against the six MAINTAINABILITY.md
-  outcomes (Higher Cohesion, Lower Coupling, Explicit Intent, Locality of
-  Change, Reduced Cognitive Load, Strong Domain Modeling). Score each 1-5 on
-  each dimension. Pick the winner.
+- Instruction: evaluate each diff against the six MAINTAINABILITY.md outcomes
+  (Higher Cohesion, Lower Coupling, Explicit Intent, Locality of Change,
+  Reduced Cognitive Load, Strong Domain Modeling). Score each 1-5 per
+  dimension. Return the winning strategy letter.
 
 Return schema:
 
 ```json
 {
-  "winner": "Conservative|Structural|Extract-first|Domain-model|Functional",
-  "scores": { "A": 0, "B": 0, "C": 0 },
+  "winner": "A|B|C|D|E",
+  "scores": {
+    "A": {
+      "cohesion": 0,
+      "coupling": 0,
+      "intent": 0,
+      "locality": 0,
+      "cognitive_load": 0,
+      "domain_model": 0
+    }
+  },
   "reasoning": "one sentence"
 }
 ```
 
 ## 7. Apply and report
 
-Cherry-pick the winning commit to the current branch:
+Look up the SHA for the winning strategy from the result blocks collected in
+Step 5 (not from the Opus judge). Cherry-pick it onto the current branch:
 
 ```sh
-git cherry-pick <winning-commit-sha>
+git cherry-pick <sha-from-winning-agent>
 ```
 
+If cherry-pick fails due to conflict, fall back to `git apply` with the
+winning diff from the result block.
+
 Report: winning strategy, Opus reasoning, scores for each strategy, smells
-fixed vs. skipped, and test results.
+fixed vs. skipped, test results, and any agents that skipped with their reason.
 
 ## Notes
 
