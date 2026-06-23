@@ -1,8 +1,13 @@
 # PST — Merge Mode Shim
 
 The merge-mode question is injected automatically by the `SessionStart` hook
-(`session-start.rb`) on session start, resume, and `/clear`. This file is
-the manual `/pst` re-invoke path plus the rules for applying the chosen mode.
+(`session-start.rb`) on session start, resume, `/clear`, and compaction. The
+chosen mode is persisted per session (a `PostToolUse` hook records the
+`AskUserQuestion` answer to `~/.claude/pst/sessions/<session_id>/merge-mode`)
+and restated every turn by a `UserPromptSubmit` hook, so it survives
+compaction. Once a mode is persisted, `SessionStart` restates it instead of
+re-asking. This file is the manual `/pst` re-invoke path plus the rules for
+applying the chosen mode.
 
 ## /pst
 

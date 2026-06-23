@@ -11,13 +11,15 @@ class Paths
     @home = home
   end
 
-  def hook_source  = File.join(@repo, "scripts", "session-start.rb")
+  def scripts      = File.join(@repo, "scripts")
   def skill_source = File.join(@repo, "skills", "pst", "SKILL.md")
   def bin          = File.join(@home, ".claude", "pst", "bin")
   def skills       = File.join(@home, ".claude", "skills", "pst")
   def settings     = File.join(@home, ".claude", "settings.json")
-  def hook_dest    = File.join(bin, "session-start.rb")
   def skill_dest   = File.join(skills, "SKILL.md")
+
+  def script_source(name) = File.join(scripts, name)
+  def script_dest(name)   = File.join(bin, name)
 end
 
 module RubyInterpreter
@@ -35,11 +37,14 @@ class SettingsFile
     @managed_dir = managed_dir
   end
 
-  def wire_session_start(command)
+  def wire(events)
     data = load
-    section = (data["hooks"] ||= {})["SessionStart"] ||= []
-    drop_managed_hooks(section)
-    section << { "hooks" => [{ "type" => "command", "command" => command }] }
+    hooks = (data["hooks"] ||= {})
+    events.each do |event, command|
+      section = (hooks[event] ||= [])
+      drop_managed_hooks(section)
+      section << { "hooks" => [{ "type" => "command", "command" => command }] }
+    end
     persist(data)
   end
 
@@ -69,13 +74,19 @@ class SettingsFile
 end
 
 class Installer
+  HOOKS = {
+    "SessionStart"     => "session-start.rb",
+    "PostToolUse"      => "merge-mode-record.rb",
+    "UserPromptSubmit" => "merge-mode-restate.rb"
+  }.freeze
+
   def initialize(paths:, ruby:)
     @paths = paths
     @ruby = ruby
   end
 
   def install
-    place_hook
+    place_hooks
     link_skill
     wire_settings
     report
@@ -83,10 +94,13 @@ class Installer
 
   private
 
-  def place_hook
+  def place_hooks
     FileUtils.mkdir_p(@paths.bin)
-    FileUtils.cp(@paths.hook_source, @paths.hook_dest)
-    FileUtils.chmod(0o755, @paths.hook_dest)
+    HOOKS.each_value do |name|
+      dest = @paths.script_dest(name)
+      FileUtils.cp(@paths.script_source(name), dest)
+      FileUtils.chmod(0o755, dest)
+    end
   end
 
   def link_skill
@@ -96,14 +110,18 @@ class Installer
 
   def wire_settings
     @settings_file = SettingsFile.new(@paths.settings, managed_dir: @paths.bin)
-    @settings_file.wire_session_start("#{@ruby} #{@paths.hook_dest}")
+    @settings_file.wire(commands)
+  end
+
+  def commands
+    HOOKS.map { |event, name| [event, "#{@ruby} #{@paths.script_dest(name)}"] }.to_h
   end
 
   def report
     puts "merge-mode shim installed:"
-    puts "  hook script -> #{@paths.hook_dest}"
-    puts "  skill       -> #{@paths.skill_dest}"
-    puts "  settings    -> #{@paths.settings} (SessionStart wired; backup at #{@settings_file.backup_path})"
+    puts "  hooks    -> #{@paths.bin} (#{HOOKS.keys.join(", ")})"
+    puts "  skill    -> #{@paths.skill_dest}"
+    puts "  settings -> #{@paths.settings} (backup at #{@settings_file.backup_path})"
   end
 end
 

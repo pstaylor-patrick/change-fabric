@@ -3,10 +3,23 @@
 
 require "json"
 
+class MergeModeStore
+  def initialize(session_id)
+    @session_id = session_id.to_s
+  end
+
+  def mode
+    return nil if @session_id.empty?
+
+    path = File.join(Dir.home, ".claude", "pst", "sessions", @session_id, "merge-mode")
+    File.exist?(path) ? File.read(path).strip : nil
+  end
+end
+
 class MergeModeHook
   EVENT = "SessionStart"
 
-  DIRECTIVE = <<~TEXT.strip
+  ASK = <<~TEXT.strip
     [pst] Before responding to anything else, call the AskUserQuestion tool to set the session's MERGE MODE.
 
     Question: "How should I handle changes from this session?"
@@ -19,13 +32,32 @@ class MergeModeHook
     After the user answers, acknowledge the choice in one line, then proceed. Apply the chosen mode for the rest of the session unless /pst changes it.
   TEXT
 
-  def payload
-    { hookSpecificOutput: { hookEventName: EVENT, additionalContext: DIRECTIVE } }
+  def initialize(event)
+    @event = event
   end
 
   def emit(io = $stdout)
     io.puts(JSON.generate(payload))
   end
+
+  private
+
+  def payload
+    { hookSpecificOutput: { hookEventName: EVENT, additionalContext: directive } }
+  end
+
+  def directive
+    mode = MergeModeStore.new(@event["session_id"]).mode
+    mode ? restate(mode) : ASK
+  end
+
+  def restate(mode)
+    "[pst] Merge mode for this session is already set to #{mode}. Honor it per the /pst rules; run /pst to change it."
+  end
 end
 
-MergeModeHook.new.emit if __FILE__ == $PROGRAM_NAME
+if __FILE__ == $PROGRAM_NAME
+  raw = $stdin.read
+  event = raw.empty? ? {} : JSON.parse(raw)
+  MergeModeHook.new(event).emit
+end
