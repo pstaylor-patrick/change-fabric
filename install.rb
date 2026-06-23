@@ -12,11 +12,10 @@ class Paths
   end
 
   def scripts      = File.join(@repo, "scripts")
-  def skill_source = File.join(@repo, "skills", "pst", "SKILL.md")
+  def skill_source = File.join(@repo, "skills", "pst")
   def bin          = File.join(@home, ".claude", "pst", "bin")
-  def skills       = File.join(@home, ".claude", "skills", "pst")
+  def skill_link   = File.join(@home, ".claude", "skills", "pst")
   def settings     = File.join(@home, ".claude", "settings.json")
-  def skill_dest   = File.join(skills, "SKILL.md")
 
   def scripts_glob      = Dir.glob(File.join(scripts, "*.rb"))
   def script_dest(name) = File.join(bin, name)
@@ -104,8 +103,9 @@ class Installer
   end
 
   def link_skill
-    FileUtils.mkdir_p(@paths.skills)
-    FileUtils.ln_sf(@paths.skill_source, @paths.skill_dest)
+    FileUtils.mkdir_p(File.dirname(@paths.skill_link))
+    FileUtils.rm_f(@paths.skill_link) if File.symlink?(@paths.skill_link)
+    FileUtils.ln_sf(@paths.skill_source, @paths.skill_link)
   end
 
   def wire_settings
@@ -120,7 +120,7 @@ class Installer
   def report
     puts "merge-mode shim installed:"
     puts "  hooks    -> #{@paths.bin} (#{HOOKS.keys.join(", ")})"
-    puts "  skill    -> #{@paths.skill_dest}"
+    puts "  skill    -> #{@paths.skill_link}"
     puts "  settings -> #{@paths.settings} (backup at #{@settings_file.backup_path})"
   end
 end
