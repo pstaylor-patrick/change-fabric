@@ -171,6 +171,30 @@ function pause(ms) {
 }
 
 // ---------------------------------------------------------------------------
+// Port / target helpers (shared across stream, capture, run)
+// ---------------------------------------------------------------------------
+
+function requirePort(command) {
+  const port = parseInt(args.port);
+  if (!port) fail("args", `--port is required for ${command} command`);
+  return port;
+}
+
+async function waitForPageTarget(port, { attempts = 15, delayMs = 500 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const targets = await fetchJson(`http://127.0.0.1:${port}/json`);
+      const page = targets.find((t) => t.type === "page");
+      if (page) return page;
+    } catch {
+      /* retry */
+    }
+    await pause(delayMs);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // ChromeLink - CDP WebSocket connection
 // ---------------------------------------------------------------------------
 
@@ -214,21 +238,9 @@ class ChromeLink {
     }
 
     // Get WebSocket debugger URL
-    let targets;
-    for (let attempt = 0; attempt < 15; attempt++) {
-      try {
-        targets = await fetchJson(`http://127.0.0.1:${port}/json`);
-        break;
-      } catch {
-        await pause(500);
-      }
-    }
-
-    if (!targets)
+    const page = await waitForPageTarget(port);
+    if (!page)
       fail("connect", `Could not reach Chrome DevTools on port ${port}`);
-
-    const page = targets.find((t) => t.type === "page");
-    if (!page) fail("connect", "No page target found in Chrome");
 
     const wsUrl = page.webSocketDebuggerUrl;
 
@@ -318,22 +330,8 @@ async function handleLaunch() {
   chrome.unref();
 
   // Wait for DevTools endpoint to be reachable
-  let wsUrl = null;
-  for (let i = 0; i < 30; i++) {
-    try {
-      const targets = await fetchJson(`http://127.0.0.1:${debugPort}/json`);
-      const page = targets.find((t) => t.type === "page");
-      if (page) {
-        wsUrl = page.webSocketDebuggerUrl;
-        break;
-      }
-    } catch {
-      /* retry */
-    }
-    await pause(300);
-  }
-
-  if (!wsUrl) {
+  const launchPage = await waitForPageTarget(debugPort, { attempts: 30, delayMs: 300 });
+  if (!launchPage) {
     try {
       process.kill(chrome.pid);
     } catch {}
@@ -342,6 +340,7 @@ async function handleLaunch() {
       "Chrome started but DevTools endpoint never became reachable",
     );
   }
+  const wsUrl = launchPage.webSocketDebuggerUrl;
 
   ok({
     chromePid: chrome.pid,
@@ -356,8 +355,7 @@ async function handleLaunch() {
 // ---------------------------------------------------------------------------
 
 async function handleStream() {
-  const port = parseInt(args.port);
-  if (!port) fail("args", "--port is required for stream command");
+  const port = requirePort("stream");
 
   const outputPath =
     args.output || path.join(os.tmpdir(), `pst-qa-stream-${Date.now()}.jsonl`);
@@ -458,8 +456,7 @@ async function handleStream() {
 // ---------------------------------------------------------------------------
 
 async function handleCapture() {
-  const port = parseInt(args.port);
-  if (!port) fail("args", "--port is required for capture command");
+  const port = requirePort("capture");
 
   const captureType = args.type || "url";
   const link = await ChromeLink.attach(port);
@@ -518,8 +515,7 @@ async function handleCapture() {
 // ---------------------------------------------------------------------------
 
 async function handleRun() {
-  const port = parseInt(args.port);
-  if (!port) fail("args", "--port is required for run command");
+  const port = requirePort("run");
 
   const actionType = args.type;
   if (!actionType) fail("args", "--type is required for run command");

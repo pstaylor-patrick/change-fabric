@@ -90,6 +90,31 @@ module Pst
     ''
   end
 
+  # Read an integer counter from a file; return 0 on missing or unreadable file.
+  def read_counter(path)
+    File.read(path).to_i
+  rescue StandardError
+    0
+  end
+
+  # Reap tracked Docker containers for a session (rule 20).
+  # Record format: name<TAB>port<TAB>subdomain (legacy bare names also supported).
+  # Skips reaping when PST_KEEP_DOCKER=1.
+  def reap_docker(sid)
+    return if ENV['PST_KEEP_DOCKER'] == '1'
+
+    docker_file = File.join(HOME, 'docker', sid)
+    return unless File.exist?(docker_file)
+
+    records = File.readlines(docker_file, chomp: true).uniq.reject(&:empty?)
+    records.each do |rec|
+      name = rec.split("\t", 3).first
+      system('docker', 'stop', name, out: File::NULL, err: File::NULL)
+      system('docker', 'rm',   name, out: File::NULL, err: File::NULL)
+    end
+    FileUtils.rm_f(docker_file)
+  end
+
   IN_FLIGHT_STATUSES = %w[pending running].freeze
 
   def ledger_path(sid = session_id)

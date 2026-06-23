@@ -331,32 +331,29 @@ def _run(cmd: list, *, cwd: Optional[Path] = None, check: bool = True, capture: 
     )
 
 
+def _git_value(git_args: list, cwd: Optional[Path] = None, default: str = "") -> str:
+    """Run a git command and return stripped stdout; return default on any error."""
+    try:
+        return _run(git_args, cwd=cwd, check=False).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return default
+
+
 def _repo_root(explicit: Optional[str] = None) -> Path:
     if explicit:
         return Path(explicit).resolve()
-    try:
-        out = _run(["git", "rev-parse", "--show-toplevel"]).stdout.strip()
-        if out:
-            return Path(out)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    return Path.cwd()
+    out = _git_value(["git", "rev-parse", "--show-toplevel"])
+    return Path(out) if out else Path.cwd()
 
 
 def _default_base(repo_root: Path, explicit: Optional[str] = None) -> str:
     if explicit:
         return explicit
-    try:
-        ref = _run(
-            ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-            cwd=repo_root,
-            check=False,
-        ).stdout.strip()
-        if ref:
-            return ref.split("/", 1)[-1]
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    return "main"
+    ref = _git_value(
+        ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        cwd=repo_root,
+    )
+    return ref.split("/", 1)[-1] if ref else "main"
 
 
 def _write_if_absent(path: Path, content: str, *, force: bool, created: list, skipped: list) -> None:
