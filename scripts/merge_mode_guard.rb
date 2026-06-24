@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require_relative 'hook_event'
 require_relative 'merge_mode_store'
 require_relative 'guarded_command'
 

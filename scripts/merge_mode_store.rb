@@ -2,7 +2,6 @@
 # frozen_string_literal: true
 
 require 'fileutils'
-require_relative 'hook_event'
 
 # Reads and writes the chosen merge mode for a session, keyed by session id
 # under ~/.claude/pst/sessions. A blank session id is treated as non-persistable.
