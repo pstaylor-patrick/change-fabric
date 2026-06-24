@@ -17,8 +17,10 @@ class SkillRouteTest < Minitest::Test
     SkillRoute.new(paths, skills: SkillRegistry.load(@skills))
   end
 
+  def ruby_skill = skill_dir("ruby", auto: { "extensions" => [ "rb" ] })
+
   def test_groups_files_under_every_skill_that_matches
-    skill_dir("ruby", auto: { "extensions" => [ "rb" ] })
+    ruby_skill
     skill_dir("ai-slop", auto: { "all_files" => true })
     grouped = route(%w[app/user.rb README.md]).by_skill
     assert_equal %w[app/user.rb], grouped["ruby"]
@@ -26,18 +28,18 @@ class SkillRouteTest < Minitest::Test
   end
 
   def test_skill_matching_nothing_is_absent
-    skill_dir("ruby", auto: { "extensions" => [ "rb" ] })
+    ruby_skill
     assert_equal({}, route(%w[README.md]).by_skill)
   end
 
   def test_render_lists_each_skill_with_its_files
-    skill_dir("ruby", auto: { "extensions" => [ "rb" ] })
+    ruby_skill
     output = route(%w[a.rb b.rb]).render
     assert_equal "ruby (2):\n  a.rb\n  b.rb", output
   end
 
   def test_render_reports_no_match
-    skill_dir("ruby", auto: { "extensions" => [ "rb" ] })
+    ruby_skill
     assert_equal "No pst skills match the given files.", route(%w[README.md]).render
   end
 
