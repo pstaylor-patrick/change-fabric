@@ -13,15 +13,15 @@ two on purpose:
 - **Per-edit routing** (`skill_inject.rb`, PostToolUse) is deterministic
   file-type matching. On every edit whose path matches, the skill's body is
   injected once per session. This is "runs on every Ruby change, no matter
-  what" — it does not depend on project detection.
+  what" - it does not depend on project detection.
 - **Project fingerprint** (`skill_detect.rb`, SessionStart) is a deterministic
   marker-file scan that announces which skills apply, once per session. Project
   type is a file-presence question (`Gemfile`, `*.gemspec`), so it needs no LLM.
 - **Review** is where a model earns its keep. As you edit, `skill_inject.rb`
   queues every changed file that matches a `review: true` skill. When the turn
   ends, `skill_review.rb` (Stop hook) drains that queue and **blocks once**,
-  handing the agent a fixed prompt — embedding the skill's principles and the
-  changed file list — to run a **haiku background agent** review. It fires once
+  handing the agent a fixed prompt - embedding the skill's principles and the
+  changed file list - to run a **haiku background agent** review. It fires once
   per batch (the queue is drained) and honors `stop_hook_active`, so it never
   loops. The hook authors the prompt; the agent runs the review via Claude
   Code's real background-agent mechanism.
