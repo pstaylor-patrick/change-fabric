@@ -15,8 +15,10 @@ module ReviewPrompt
   # The review must run and return BEFORE the verdict is recorded, and the gate
   # is released only by the explicit ack, never by being dispatched. So the
   # prompt tells the agent to wait for the review (not background it), then run
-  # the ack command, then retry. New edits after the ack change their content
-  # hash and re-arm the review.
+  # the ack command, then retry. The ack and the retry must be separate commands:
+  # the gate inspects the command at PreToolUse, before it runs, so an "ack; push"
+  # chain reads the still-unreviewed queue and denies the whole thing. New edits
+  # after the ack change their content hash and re-arm the review.
   def build(entries, registry, session_id)
     by_name = registry.to_h { |skill| [ skill.name, skill ] }
     sections = entries.group_by { |entry| entry[:skill] }
@@ -33,7 +35,9 @@ module ReviewPrompt
 
           #{ack_command(session_id)}
 
-      Then re-run your push or PR command, or finish the turn.
+      Run that ack on its own, then re-run your push or PR as a separate command,
+      or finish the turn. The gate reads the queue before a command runs, so
+      chaining them (ack and push in one command) is still denied.
 
       #{sections.join("\n\n")}
     TEXT
