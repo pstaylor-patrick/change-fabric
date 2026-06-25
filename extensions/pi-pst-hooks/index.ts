@@ -23,6 +23,12 @@ type HookContext = {
 const HOOK_BIN = join(process.env.HOME ?? "", ".claude", "pst", "bin");
 const RUBY = process.env.PST_RUBY ?? "ruby";
 const MERGE_MODES = ["Local only", "Merge ready", "Admin bypass"] as const;
+const PI_SESSION_PREFIX = "pi-";
+const UNSET_MERGE_MODE_CONTEXT =
+	"[pst pi] No merge mode is set for this Pi session. Pi does not have Claude Code AskUserQuestion parity in non-UI modes, so run /pst before pushing, opening PRs, or merging.";
+const STOP_BEST_EFFORT_CONTEXT =
+	"[pst pi] Pi has no blocking Stop hook. Treat this follow-up as a required review gate before declaring the work complete.";
+const HOOK_TIMEOUT_MS = 5_000;
 
 export default function pstHooks(pi: ExtensionAPI) {
 	let pendingContext: string[] = [];
@@ -40,7 +46,11 @@ export default function pstHooks(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		await ensureMergeMode(ctx);
-		await runAndQueue(pi, pendingContext, "session_start.rb", baseEvent(ctx));
+		if (readMergeMode(sessionId(ctx))) {
+			await runAndQueue(pi, pendingContext, "session_start.rb", baseEvent(ctx));
+		} else {
+			pendingContext.push(UNSET_MERGE_MODE_CONTEXT);
+		}
 		await runAndQueue(pi, pendingContext, "skill_detect.rb", baseEvent(ctx));
 	});
 
@@ -83,7 +93,7 @@ export default function pstHooks(pi: ExtensionAPI) {
 			const output = await runHook("skill_review.rb", { ...baseEvent(ctx), stop_hook_active: false }, ctx.cwd);
 			if (output.systemMessage) emitContext(pi, output.systemMessage);
 			if (output.decision === "block" && output.reason) {
-				pi.sendUserMessage(output.reason, { deliverAs: "followUp" });
+				pi.sendUserMessage(`${STOP_BEST_EFFORT_CONTEXT}\n\n${output.reason}`, { deliverAs: "followUp" });
 			}
 		} finally {
 			stopHookActive = false;
@@ -162,12 +172,28 @@ function runHook(script: string, event: Record<string, unknown>, cwd: string): P
 	return new Promise((resolve) => {
 		const child = spawn(RUBY, [join(HOOK_BIN, script)], { cwd, stdio: ["pipe", "pipe", "ignore"] });
 		let stdout = "";
-		child.stdout.on("data", (chunk) => {
+		let settled = false;
+		const finish = (output: HookOutput) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			resolve(output);
+		};
+		const timeout = setTimeout(() => {
+			child.kill();
+			finish({});
+		}, HOOK_TIMEOUT_MS);
+		child.stdout.on("data", (chunk: Buffer) => {
 			stdout += chunk.toString();
 		});
-		child.on("error", () => resolve({}));
-		child.on("close", () => resolve(parseHookOutput(stdout)));
-		child.stdin.end(JSON.stringify(event));
+		child.on("error", () => finish({}));
+		child.on("close", () => finish(parseHookOutput(stdout)));
+		try {
+			child.stdin.end(JSON.stringify(event));
+		} catch {
+			child.kill();
+			finish({});
+		}
 	});
 }
 
@@ -183,7 +209,7 @@ function parseHookOutput(stdout: string): HookOutput {
 
 function sessionId(ctx: HookContext) {
 	const raw = ctx.sessionManager.getSessionFile?.() ?? ctx.cwd;
-	return createHash("sha256").update(raw).digest("hex").slice(0, 32);
+	return `${PI_SESSION_PREFIX}${createHash("sha256").update(raw).digest("hex").slice(0, 32)}`;
 }
 
 function mergeModePath(id: string) {
