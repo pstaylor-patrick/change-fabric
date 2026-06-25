@@ -190,61 +190,85 @@ module Install
 
   # Points OpenCode at a generated, OpenCode-safe translation of the same skills.
   # Strips JSONC comments (// line and /* block */) while leaving any
-  # comment-like sequences that appear inside string literals untouched.
-  # A scanner is the natural shape here: the next move depends only on the
-  # current position and whether we are inside a string.
+  # comment-like sequences inside string literals untouched. A cursor walks
+  # the text and each step is delegated to the current state, so "are we
+  # inside a string?" lives in the state objects instead of one wide branch.
   class JsoncStripper
     def self.strip(text) = new(text).strip
 
     def initialize(text)
-      @text = text
-      @pos = 0
-      @out = String.new
+      @cursor = Cursor.new(text)
     end
 
     def strip
-      while @pos < @text.length
-        if peek == '"'        then consume_string
-        elsif starts?('//')   then skip_line_comment
-        elsif starts?('/*')   then skip_block_comment
-        else emit(peek)
+      state = Outside
+      state = state.step(@cursor) until @cursor.done?
+      @cursor.output
+    end
+
+    # Holds the scan position and the stripped output, exposing only the
+    # moves the states need so the states stay free of index arithmetic.
+    class Cursor
+      attr_reader :output
+
+      def initialize(text)
+        @text = text
+        @pos = 0
+        @output = String.new
+      end
+
+      def done? = @pos >= @text.length
+      def peek = @text[@pos]
+      def starts?(token) = @text[@pos, token.length] == token
+
+      def keep
+        @output << @text[@pos]
+        @pos += 1
+      end
+
+      def skip_line_comment
+        @pos += 2
+        @pos += 1 while !done? && peek != "\n"
+      end
+
+      def skip_block_comment
+        @pos += 2
+        @pos += 1 until done? || starts?('*/')
+        @pos += 2
+      end
+    end
+
+    # Default state: copy bytes through, but enter a string or skip a comment
+    # when one begins.
+    module Outside
+      def self.step(cursor)
+        if cursor.peek == '"'
+          cursor.keep
+          Inside
+        elsif cursor.starts?('//')
+          cursor.skip_line_comment
+          self
+        elsif cursor.starts?('/*')
+          cursor.skip_block_comment
+          self
+        else
+          cursor.keep
+          self
         end
       end
-      @out
     end
 
-    private
-
-    def peek = @text[@pos]
-
-    def starts?(token) = @text[@pos, token.length] == token
-
-    def emit(char)
-      @out << char
-      @pos += 1
-    end
-
-    # Copies a string literal verbatim, treating a backslash as escaping the
-    # next character so an escaped quote does not end the literal early.
-    def consume_string
-      emit(peek) # opening quote
-      until @pos >= @text.length
-        char = peek
-        emit(char)
-        return if char == '"'
-        emit(peek) if char == '\\' && @pos < @text.length
+    # Inside a string literal: copy every byte verbatim so comment markers are
+    # preserved, and treat a backslash as escaping the next byte so an escaped
+    # quote does not end the string early.
+    module Inside
+      def self.step(cursor)
+        char = cursor.peek
+        cursor.keep
+        return Outside if char == '"'
+        cursor.keep if char == '\\' && !cursor.done?
+        self
       end
-    end
-
-    def skip_line_comment
-      @pos += 2
-      @pos += 1 while @pos < @text.length && peek != "\n"
-    end
-
-    def skip_block_comment
-      @pos += 2
-      @pos += 1 until @pos >= @text.length || starts?('*/')
-      @pos += 2
     end
   end
 
