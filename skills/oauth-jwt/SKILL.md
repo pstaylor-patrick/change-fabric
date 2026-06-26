@@ -3,6 +3,8 @@ name: pst:oauth-jwt
 description: OAuth 2.0 and JWT auth flows. Auto-applied by the pst shim on every auth-related change; also invocable directly.
 auto:
   extensions: [js, jsx, mjs]
+  require:
+    - dep: [jsonwebtoken, jose, passport, passport-jwt, "@node-oauth/express-oauth-server", openid-client]
   detect: ["**/*auth*.js", "**/*oauth*.js", "**/*jwt*.js", "**/*session*.js"]
 ---
 

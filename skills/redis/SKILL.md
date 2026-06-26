@@ -3,6 +3,8 @@ name: pst:redis
 description: Redis cache and session usage. Auto-applied by the pst shim on every Redis-related change; also invocable directly.
 auto:
   extensions: [js, mjs]
+  require:
+    - dep: [redis, ioredis]
   detect: [package.json, "**/*redis*.js", "**/*cache*.js", "**/*session*.js"]
 ---
 

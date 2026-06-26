@@ -116,7 +116,12 @@ class SkillInjectTest < Minitest::Test
     File.write(path, "x")
     text = context(tool: "Edit", path: path)
     refute_includes text.to_s, "drz", "drizzle must not surface in a Prisma project"
-    refute_includes ReviewQueue.new("s1").pending.map { |q| q[:skill] }, "drz"
+    # Enqueue is structural, so drz does enter the raw queue; the final-tree
+    # gate (review_scope) is what drops it from the review that arms the gate.
+    pending = ReviewQueue.new("s1").pending
+    assert_includes pending.map { |q| q[:skill] }, "drz", "structural enqueue is ungated"
+    refute_includes ReviewScope.covered(pending, registry).map { |q| q[:skill] }, "drz",
+                    "the final-tree exclude marker drops it from review"
   end
 
   def test_excluded_skill_surfaced_when_no_conflict
@@ -125,6 +130,26 @@ class SkillInjectTest < Minitest::Test
     FileUtils.mkdir_p(File.dirname(path))
     File.write(path, "x")
     assert_includes context(tool: "Edit", path: path).to_s, "drz"
+  end
+
+  def test_file_authored_before_its_require_marker_is_still_reviewed
+    skill_dir("drz", auto: { "paths" => [ "**/schema.js" ], "require" => [ "**/drizzle.config.js" ] })
+    schema = File.join(@proj, "src", "db", "schema.js")
+    FileUtils.mkdir_p(File.dirname(schema))
+    File.write(schema, "x")
+    # Edit happens before the marker exists: structural enqueue still captures it,
+    # even though the require gate is unsatisfied at this instant.
+    context(tool: "Edit", path: schema)
+    pending = ReviewQueue.new("s1").pending
+    assert_includes pending.map { |q| q[:skill] }, "drz", "structural enqueue is ungated"
+    refute_includes ReviewScope.covered(pending, registry).map { |q| q[:skill] }, "drz",
+                    "with no marker yet, the final-tree gate drops it"
+
+    # The marker now appears; the final-tree gate admits the earlier file.
+    File.write(File.join(@proj, "drizzle.config.js"), "x")
+    covered = ReviewScope.covered(ReviewQueue.new("s1").pending, registry)
+    assert_includes covered.map { |q| q[:skill] }, "drz",
+                    "once the marker exists, the file authored before it is reviewed"
   end
 
   def test_unresolved_root_does_not_suppress

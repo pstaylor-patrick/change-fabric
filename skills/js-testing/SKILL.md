@@ -2,7 +2,13 @@
 name: pst:js-testing
 description: Vitest, Jest, Cypress, and Testing Library tests. Auto-applied by the pst shim on every JS test change; also invocable directly.
 auto:
-  extensions: [js, jsx]
+  paths:
+    - "**/*.test.{js,jsx,mjs,cjs}"
+    - "**/*.spec.{js,jsx,mjs,cjs}"
+    - "**/*.cy.{js,jsx}"
+    - "**/{vitest,jest,cypress}.config.*"
+  require:
+    - dep: [vitest, jest, mocha, cypress, "@testing-library/react"]
   detect: ["**/*.test.js", "**/*.spec.js", "**/*.cy.js", "vitest.config.*", "jest.config.*", "cypress.config.*"]
 ---
 

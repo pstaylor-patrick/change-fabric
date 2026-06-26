@@ -7,6 +7,7 @@ auto:
     - "drizzle/**"
     - "**/schema.{ts,js,mjs,cjs}"
     - "**/db.{ts,js,mjs,cjs}"
+    - "**/db/*.{ts,js,mjs,cjs}"
   require:
     - "**/drizzle.config.*"
   exclude:

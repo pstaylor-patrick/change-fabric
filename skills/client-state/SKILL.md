@@ -3,6 +3,8 @@ name: pst:client-state
 description: Redux Toolkit and TanStack Query state management. Auto-applied by the pst shim on every client-state change; also invocable directly.
 auto:
   extensions: [js, jsx]
+  require:
+    - dep: ["@reduxjs/toolkit", react-redux, redux, "@tanstack/react-query"]
   detect: ["**/*slice.js", "**/*store.js", "**/*query*.js", "**/*api*.js"]
 ---
 

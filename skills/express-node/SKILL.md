@@ -3,6 +3,8 @@ name: pst:express-node
 description: Express and Node.js ESM backend. Auto-applied by the pst shim on every Express backend change; also invocable directly.
 auto:
   extensions: [js, mjs]
+  require:
+    - dep: [express]
   detect: [package.json, "**/server.js", "**/app.js", "**/routes/**/*.js"]
 ---
 

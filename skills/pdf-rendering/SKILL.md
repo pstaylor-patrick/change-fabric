@@ -3,6 +3,8 @@ name: pst:pdf-rendering
 description: Server-side PDF generation with Puppeteer and Handlebars. Auto-applied by the pst shim on every PDF-rendering change; also invocable directly.
 auto:
   extensions: [js, mjs, hbs, handlebars, html]
+  require:
+    - dep: [puppeteer, puppeteer-core, playwright, handlebars]
   detect: ["**/*pdf*.js", "**/*.hbs", "**/*.handlebars", "**/*template*.html"]
 ---
 
@@ -32,7 +34,8 @@ Forbid by default:
 
 CI:
 - `npx --no-install eslint . --max-warnings 0`
-- `out=$(git diff --name-only --diff-filter=AM origin/HEAD -- '*.hbs' '*.handlebars' '*.html' '*.js' '*.mjs' | xargs -I{} git grep -nP "\\{\\{\\{|\\bSafeString\\b|https?://|page\\.pdf\\(\\s*\\)" -- {}); [ -z "$out" ]`
+- `out=$(git diff --name-only --diff-filter=AM origin/HEAD -- '*.hbs' '*.handlebars' '*.html' | xargs -I{} git grep -nP "\\{\\{\\{|https?://" -- {}); [ -z "$out" ]`
+- `out=$(git diff --name-only --diff-filter=AM origin/HEAD -- '*.js' '*.mjs' | xargs -I{} git grep -nP "\\bSafeString\\b|page\\.pdf\\(\\s*\\)" -- {}); [ -z "$out" ]`
 - `out=$(git diff --name-only --diff-filter=AM origin/HEAD -- '*.js' '*.mjs' | xargs -I{} git grep -lP "\\.(pdf|newPage)\\(" -- {} | xargs -I{} git grep -LP "finally" -- {}); [ -z "$out" ]`
 
 Agent protocol:

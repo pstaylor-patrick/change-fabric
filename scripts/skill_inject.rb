@@ -28,12 +28,17 @@ class SkillInject
     path = changed_path
     return unless path
 
-    root = repo_root(path)
-    matched = registry.select { |skill| skill.matches?(path, root: root) }
-    return if matched.empty?
+    # Enqueue on the structural match (gates skipped), so a file authored before
+    # its require marker still enters the queue; the require/exclude gates are
+    # applied at review time against the final tree (review_scope). Surfacing
+    # stays gated to the project as it stands, so a non-matching project does not
+    # see the cheat sheet.
+    structural = registry.select { |skill| skill.matches?(path) }
+    return if structural.empty?
 
-    enqueue_reviews(matched, path)
-    surface(matched, io)
+    enqueue_reviews(structural, path)
+    root = repo_root(path)
+    surface(structural.select { |skill| skill.matches?(path, root: root) }, io)
   end
 
   private
