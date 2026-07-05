@@ -12,6 +12,13 @@ plausible-sounding comment that was never checked against the real code is the
 AI slop this skill exists to filter out. Silence beats a wrong or nitpicky
 comment; when in doubt, drop it.
 
+## Reference files
+
+- `reference/workflow.js`: the Workflow script for step 2. Read it, then pass
+  its full contents verbatim as `Workflow`'s `script` argument.
+- `reference/posting.md`: tier bars and comment-rendering rules for step 4.
+  Read it before posting any comment.
+
 ## Scope
 
 Accepted forms, resolved in this order:
@@ -41,17 +48,15 @@ If scope is ambiguous, ask which PR or files are meant. Do not guess.
    whose code is under review, i.e. the PR's head or the branch tip, never
    the merge-base) alongside the file list; step 2 needs a real commit
    worktrees can check out, not a moving branch name.
-2. **Run the review workflow.** Call `Workflow` with the script under
-   Review workflow script and `args: { files, repoPath, headSha, cap }`
-   (`cap` optional, defaults to 15). Invoking this skill is what authorizes
-   the `Workflow` call, so no separate orchestration opt-in is needed. The
-   script shards a large file set into semantic sections, finds candidates
-   per shard (folding the rubric and general lenses into one pass, or
-   splitting the rubric lens onto its own cheap-tier call only when a
-   shard's file count makes that split a real, separable job), verifies
-   every candidate by trying to refute it inside its own throwaway `git
-   worktree` of `repoPath` at `headSha`, and independently rechecks every
-   P1 before it is allowed to keep that tier. It returns `{ shards, posted,
+2. **Run the review workflow.** Read `reference/workflow.js` and call
+   `Workflow` with its full contents as `script` and `args: { files,
+   repoPath, headSha, cap }` (`cap` optional, defaults to 15). Invoking this
+   skill is what authorizes the `Workflow` call, so no separate
+   orchestration opt-in is needed. The script shards a large file set into
+   semantic sections, finds candidates per shard, verifies every candidate
+   by trying to refute it inside its own throwaway `git worktree` of
+   `repoPath` at `headSha`, and independently rechecks every P1 before it
+   is allowed to keep that tier. It returns `{ shards, posted,
    droppedForVolume }`; `posted` is the deduped, ranked, capped finding
    list. On a repeat run against the same scope, pass the `scriptPath` the
    first call returned instead of resending `script`, so unchanged stages
@@ -74,279 +79,17 @@ If scope is ambiguous, ask which PR or files are meant. Do not guess.
    the invocation said to post automatically. If the `Workflow` call errored
    or returned no `posted` list, say so explicitly and stop here; do not
    silently fall back to hand-applying fixes without surfacing this report.
-4. **Post.**
+4. **Post.** Before this step, read `reference/posting.md` for the tier
+   bars and comment-rendering rules.
    - PR scope: `pull_request_review_write` with `create` (no `event`, so it
      stays pending), then `add_comment_to_pending_review` per finding in
-     `posted`, anchored to `path`/`line` with the body rendered per Posting
-     style below, then `submit_pending` with `event: "COMMENT"`. Never
-     `REQUEST_CHANGES` or `APPROVE` unless asked.
-     Posting these review comments is not a `git push`, a `gh pr merge`, or
-     opening a PR, so the pst merge mode does not gate it: post in every mode
-     (Local only included) whenever the user approves in step 3. Merge mode
-     restricts only landing code, never review commentary on a PR that
-     already exists.
+     `posted`, anchored to `path`/`line` with the body rendered per
+     `reference/posting.md`, then `submit_pending` with `event: "COMMENT"`.
+     Never `REQUEST_CHANGES` or `APPROVE` unless asked. Posting these review
+     comments is not a `git push`, a `gh pr merge`, or opening a PR, so the
+     pst merge mode does not gate it: post in every mode (Local only
+     included) whenever the user approves in step 3. Merge mode restricts
+     only landing code, never review commentary on a PR that already
+     exists.
    - Non-PR scope: there is nothing to post to. The curated report to the
      user is the deliverable.
-
-## Review workflow script
-
-Pass this verbatim as `Workflow`'s `script`. It owns everything the old
-per-step `Agent` instructions used to describe by hand: sharding, model
-tiers, background/parallel dispatch, the P1 double-check, and the
-dedupe/rank/cap that turns raw candidates into `posted`. Comment text and
-the actual PR post stay outside it (step 3 and 4 above), since posting
-needs a human ask this script has no tool to make.
-
-```js
-export const meta = {
-  name: "pst-code-review-scope",
-  description: "Shard, find, worktree-verify, and rank code review findings for one scope",
-  phases: [
-    { title: "Shard" },
-    { title: "Find" },
-    { title: "Verify" },
-    { title: "Recheck P1", model: "opus" }
-  ]
-}
-
-const SHARD_SCHEMA = {
-  type: "object",
-  properties: {
-    shards: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          rationale: { type: "string" },
-          files: { type: "array", items: { type: "string" } }
-        },
-        required: [ "name", "files" ]
-      }
-    }
-  },
-  required: [ "shards" ]
-}
-
-const CANDIDATES_SCHEMA = {
-  type: "object",
-  properties: {
-    candidates: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          file: { type: "string" },
-          line: { type: "number" },
-          scenario: { type: "string" },
-          source: { type: "string" }
-        },
-        required: [ "file", "line", "scenario" ]
-      }
-    }
-  },
-  required: [ "candidates" ]
-}
-
-const VERDICT_SCHEMA = {
-  type: "object",
-  properties: {
-    reproduced: { type: "boolean" },
-    evidence: { type: "string" },
-    tier: { type: "string", enum: [ "P1", "P2", "P3" ] },
-    title: { type: "string" },
-    suggestion: { type: "string" }
-  },
-  required: [ "reproduced", "evidence", "tier", "title" ]
-}
-
-const RECHECK_SCHEMA = {
-  type: "object",
-  properties: {
-    reproduced: { type: "boolean" },
-    evidence: { type: "string" }
-  },
-  required: [ "reproduced", "evidence" ]
-}
-
-// Some hosts hand this script a JSON-encoded string instead of the parsed
-// object the Workflow contract promises; tolerate both.
-const scope = typeof args === "string" ? JSON.parse(args) : args
-
-const files = scope.files
-const repoPath = scope.repoPath
-const headSha = scope.headSha
-const shardThreshold = scope.shardThreshold ?? 40
-const rubricThreshold = scope.rubricThreshold ?? 25
-const cap = scope.cap ?? 15
-
-// isolation: "worktree" on the Agent calls below only isolates this
-// session's own primary repo, not repoPath, so it is not used here.
-// Verify and Recheck P1 manage their own git worktree of repoPath instead,
-// which is correct whether repoPath is the primary repo or a separate one.
-function worktreeSetup() {
-  return "Before doing anything else, create a throwaway checkout: run " +
-    "`d=$(mktemp -d) && git -C " + repoPath + " worktree add \"$d\" " + headSha +
-    " && echo \"$d\"`, then do every reproduction step inside that echoed path, " +
-    "never in " + repoPath + " itself. Remove it when done with `git -C " + repoPath +
-    " worktree remove \"<path>\" --force`. "
-}
-
-phase("Shard")
-let shards
-if (files.length <= shardThreshold) {
-  shards = [ { name: "scope", files: files, rationale: "small enough for one pass" } ]
-} else {
-  const map = await agent(
-    "Map this file list into coherent semantic sections a reviewer would treat as one unit " +
-    "(e.g. auth, billing, the caching layer), not directory splits. Give each section a short " +
-    "name, a one-line rationale, and its file list.\n\nFiles:\n" + files.join("\n"),
-    { model: "opus", phase: "Shard", schema: SHARD_SCHEMA }
-  )
-  shards = map.shards
-}
-log(shards.length + " shard(s): " + shards.map((s) => s.name + " (" + s.files.length + ")").join(", "))
-
-const shardResults = await pipeline(
-  shards,
-  async (shard) => {
-    if (shard.files.length <= rubricThreshold) {
-      const found = await agent(
-        "Review these files for correctness bugs, security issues, missing or wrong test " +
-        "coverage, and refactor opportunities. Apply the matched skill rubrics from " +
-        "`ruby ~/.claude/pst/bin/skill_route.rb <files>` where they cover a file, plus general " +
-        "judgment where they do not. Every candidate needs a concrete failure scenario, not a " +
-        "vague quality note.\n\nFiles:\n" + shard.files.join("\n"),
-        { phase: "Find", label: shard.name, schema: CANDIDATES_SCHEMA }
-      )
-      return { shard: shard, candidates: found.candidates }
-    }
-    const lensResults = await parallel([
-      () => agent(
-        "Route these files with `ruby ~/.claude/pst/bin/skill_route.rb <files>` and apply " +
-        "each matched skill principles verbatim. Files:\n" + shard.files.join("\n"),
-        { model: "haiku", phase: "Find", label: shard.name + ":rubric", schema: CANDIDATES_SCHEMA }
-      ),
-      () => agent(
-        "General review pass, unscoped to any named rubric: correctness bugs, security, " +
-        "API and contract breaks, missing or wrong test coverage, performance. Files:\n" +
-        shard.files.join("\n"),
-        { phase: "Find", label: shard.name + ":general", schema: CANDIDATES_SCHEMA }
-      )
-    ])
-    const candidates = lensResults.filter(Boolean).flatMap((r) => r.candidates)
-    return { shard: shard, candidates: candidates }
-  },
-  async (found) => {
-    const seenKeys = new Set()
-    const uniqueCandidates = found.candidates.filter((c) => {
-      const key = c.file + ":" + c.line
-      if (seenKeys.has(key)) return false
-      seenKeys.add(key)
-      return true
-    })
-    const verified = await parallel(uniqueCandidates.map((c) => () =>
-      agent(
-        worktreeSetup() +
-        "Try to refute this finding by reproducing it against the real code: " + c.file + ":" +
-        c.line + " - " + c.scenario + ". Reproduce with a failing test, an actual invocation, " +
-        "or by applying a refactor and confirming behavior holds; do not just re-read the code " +
-        "and agree. If it survives, also write a title: an imperative one-line headline under " +
-        "60 characters naming what is wrong (e.g. 'Missing pst:ctx row in Command skills table'). " +
-        "The title states what is wrong; it must not restate the scenario's detail or repeat its " +
-        "wording, since both are posted together under one character budget.",
-        { phase: "Verify", label: c.file + ":" + c.line, schema: VERDICT_SCHEMA }
-      ).then((v) => (v ? { ...c, ...v } : null))
-    ))
-    const survivors = verified.filter(Boolean).filter((f) => f.reproduced)
-    return { shard: found.shard, findings: survivors }
-  },
-  async (verified) => {
-    const p1s = verified.findings.filter((f) => f.tier === "P1")
-    const rechecks = await parallel(p1s.map((f) => () =>
-      agent(
-        worktreeSetup() +
-        "Independently try to reproduce this finding with no prior context: " + f.file + ":" +
-        f.line + " - " + f.scenario,
-        { model: "opus", phase: "Recheck P1", label: f.file + ":" + f.line, schema: RECHECK_SCHEMA }
-      ).then((r) => ({ key: f.file + ":" + f.line, confirmed: Boolean(r && r.reproduced) }))
-    ))
-    const confirmedKeys = new Set(rechecks.filter((r) => r.confirmed).map((r) => r.key))
-    const findings = verified.findings.map((f) => {
-      if (f.tier !== "P1") return f
-      const key = f.file + ":" + f.line
-      return confirmedKeys.has(key) ? f : { ...f, tier: "P2", suggestion: undefined }
-    })
-    return { shard: verified.shard, findings: findings }
-  }
-)
-
-const all = shardResults.filter(Boolean).flatMap((r) => r.findings)
-const byKey = new Map()
-for (const f of all) {
-  const key = f.file + ":" + f.line
-  if (!byKey.has(key)) byKey.set(key, f)
-}
-const rank = { P1: 0, P2: 1, P3: 2 }
-const eligible = [ ...byKey.values() ].filter((f) => f.tier !== "P3" || f.suggestion)
-const ranked = eligible.sort((a, b) => rank[a.tier] - rank[b.tier])
-
-return {
-  shards: shards.map((s) => ({ name: s.name, files: s.files.length })),
-  posted: ranked.slice(0, cap),
-  droppedForVolume: Math.max(0, ranked.length - cap)
-}
-```
-
-## Model tiers
-
-The script picks a model per call so the cheap tier is used only where the
-work is itself high-volume and mechanically separable, never as a reflex:
-
-| Call | Model | Why |
-|---|---|---|
-| Shard mapping | `opus` | One call gates the whole run; needs real semantic boundaries, not directory splits |
-| Find, folded (small shard) | inherit | One pass covering both lenses; no checklist-only slice big enough to split out |
-| Find, rubric split (large shard) | `haiku` | Applies an already-written skill's rules across enough files to be its own job |
-| Find, general split (large shard) | inherit | No checklist; needs full reasoning to name what a rubric cannot |
-| Verify | inherit | Must write and run a real repro or refactor correctly |
-| Recheck P1 | `opus` | Low volume, highest stakes: gates a red, auto-apply-diff finding |
-
-## Priority
-
-Assign a tier from what the Verify stage actually proved, never from how
-severe it sounds:
-
-| Tier | Bar | Requires |
-|---|---|---|
-| P1 (red) | Confirmed break: crash, wrong output, security hole, data loss | A reproduction, plus Recheck P1 agreement |
-| P2 (yellow) | Confirmed but bounded: real bug/smell needing specific input, config, or scale; or a refactor with verified payoff | A reproduction from Verify |
-| P3 (green) | Real but low blast radius, and only worth interrupting for because the fix is a one-line, unambiguous diff | A reproduction from Verify, and a suggestion block (see below) |
-
-Drop anything that only clears the P3 bar and has no suggestion block; it is
-noise, not feedback. Every posted finding needs a `title` (see the Verify
-prompt above); render the comment body via `ruby
-~/.claude/pst/bin/render_finding_comment.rb`, never a hand-written tier
-prefix.
-
-## Posting style
-
-One finding, one comment: an emoji-badged tier header (`🔴 P1`, `🟠 P2`,
-`🟢 P3`) and title on line 1, then the concrete failure scenario, then the
-fix. Before calling `add_comment_to_pending_review`, pipe the finding as
-JSON (`{tier, title, scenario, suggestion}`, `scenario` carrying the
-evidence-backed detail) to `ruby ~/.claude/pst/bin/render_finding_comment.rb`
-on stdin and post its stdout verbatim as the comment body. The script owns
-the template, the badge, and the char-budget fallback (drop the suggestion
-block, then truncate the scenario) once the finding is over its 640-char
-cap; do the prose-trimming judgment call yourself first so the script's
-truncation is a safety net, not the first line of defense. No summary of
-the summary, no praise, no restating the diff. Apply `pst:ai-slop`'s
-punctuation and tone rules to `title` and `scenario` before rendering.
-
-Add a GitHub suggestion block only when the fix is mechanical and
-unambiguous from the finding alone (a rename, a null check, an off-by-one,
-a dead branch, the exact rubric move a matched skill names) and touches
-only the lines already in the diff. Never suggest a diff for anything
-needing a judgment call, multiple files, or unclear intent; omit
-`suggestion` from the finding instead.
