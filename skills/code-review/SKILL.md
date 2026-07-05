@@ -174,11 +174,11 @@ const cap = scope.cap ?? 15
 // Verify and Recheck P1 manage their own git worktree of repoPath instead,
 // which is correct whether repoPath is the primary repo or a separate one.
 function worktreeSetup() {
-  return "Before doing anything else, create your own throwaway checkout: run " +
+  return "Before doing anything else, create a throwaway checkout: run " +
     "`d=$(mktemp -d) && git -C " + repoPath + " worktree add \"$d\" " + headSha +
-    " && echo \"$d\"` and note the path it echoes, then do every reproduction step " +
-    "inside that path only, never in " + repoPath + " itself. Remove it when finished " +
-    "with `git -C " + repoPath + " worktree remove \"<path>\" --force`. "
+    " && echo \"$d\"`, then do every reproduction step inside that echoed path, " +
+    "never in " + repoPath + " itself. Remove it when done with `git -C " + repoPath +
+    " worktree remove \"<path>\" --force`. "
 }
 
 phase("Shard")
