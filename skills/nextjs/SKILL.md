@@ -23,7 +23,7 @@ Favor:
 - `params`/`searchParams` typed as `Promise<...>` and awaited (Next.js 15+); `use()` only in synchronous components
 - `metadata` / `generateMetadata` in Server Components only, never a file with `'use client'`
 - `React.cache()` to dedupe a fetch shared by `generateMetadata` and the page
-- `'use cache'` with `cacheLife()` for cacheable reads
+- `'use cache'` with `cacheLife()` for cacheable reads, but only once the experimental directive is enabled (`experimental.useCache` or `experimental.dynamicIO` in `next.config`); it is not on by default
 - `next/script` with `strategy="afterInteractive"` for third-party scripts that would otherwise cause hydration mismatches
 
 Avoid:
@@ -49,9 +49,15 @@ Server Action round-trip cannot give (drag state, optimistic UI mid-keystroke). 
 `'use client'` boundary as small as possible even then, and still call a Server Action for
 the actual write.
 
-CI:
+CI (mechanically enforced):
 - `next build` passes
 - lint max warnings = 0
+- `tsc --noEmit` passes; this catches unawaited `params`/`searchParams` once they are typed as `Promise<...>`
+
+Review-time (no tool checks these, a human judges them in code review):
+- Server Actions preferred over client-side `fetch`/`axios` mutations
+- `'use client'` boundaries kept minimal
+- every exception carries a stated reason
 
 Agent protocol:
 1. Default new routes/pages/layouts to Server Components.
