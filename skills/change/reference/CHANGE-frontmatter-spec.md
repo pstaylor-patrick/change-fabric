@@ -1,6 +1,6 @@
 # CHANGE.md frontmatter specification
 
-Schema version: 1.3.0
+Schema version: 0.1.0
 
 Status: stable. This is the golden reference for authoring a repo's `CHANGE.md`
 frontmatter. A maintainer or an AI agent creating a new repo's `CHANGE.md` reads
@@ -220,28 +220,18 @@ Version scheme (semver for the schema):
 
 ### Changelog
 
-- 1.3.0: adds `lanes.browserless.auth.steps[]`, a multi-step login (each step
-  with its own `url`, `fields[]`, `submit_selector`, `wait_for_selector`,
-  `timeout_ms`) alongside the existing single-form shorthand, which is now
-  normalized internally into a one-step `steps` list. A field's value comes
-  from `env` (as before) or a new `code_source` block that polls an HTTP
-  endpoint reachable from the browserless container (e.g. a Mailpit/MailHog
-  dev inbox), resolving an out-of-band OTP live rather than ever reading,
-  storing, or logging it on the host. Covers a login that needs more than one
-  form (submit an email, then submit a code from a second form). All
-  additions, no field removed or renamed.
-- 1.2.0: adds `boot.env_file`, a repo-relative env file (or list) parsed and
-  merged into `boot.up`'s subprocess environment, so a compose `build.args:`
-  entry's `${VAR}` interpolation resolves without pre-exporting anything. A
-  new optional field, no field removed or renamed.
-- 1.1.0: adds authenticated browserless checks and Figma visual alignment to
-  the browserless lane. `routes[]` accepts a mapping (`path`, `auth`, `figma`)
-  alongside the existing plain-string form; a new `auth:` block configures a
-  one-time login flow (real credentials only, read from env vars named by
-  `email_env`/`password_env`); a new `figma:` block per route (and lane-level
-  `figma.token_env`/`figma.max_diff_percent`) configures a pixel-diff check
-  against a real Figma REST API reference render. All additions, no field
-  removed or renamed.
-- 1.0.0: initial specification. Consolidates the mechanical config (formerly a
-  separate `.pst/change.yml`) and the governance policy into the single
-  `CHANGE.md` frontmatter, with `change_config:` and `change_policy:` blocks.
+- 0.1.0: initial pre-release specification, dogfooded end to end against real
+  consumer repos before its first tagged release. Consolidates the mechanical
+  config (formerly a separate `.pst/change.yml`) and the governance policy
+  into the single `CHANGE.md` frontmatter, with `change_config:` and
+  `change_policy:` blocks. Includes, from that dogfooding: authenticated
+  browserless checks and Figma visual alignment (`routes[]` as a mapping with
+  `path`/`auth`/`figma`, a lane-level `auth:` login flow, a `figma:` pixel-diff
+  block); `boot.env_file` to source a compose `build.args:` entry's `${VAR}`
+  interpolation into `boot.up`'s subprocess environment; and
+  `lanes.browserless.auth.steps[]`, a multi-step login (each step with its own
+  `url`, `fields[]`, `submit_selector`, `wait_for_selector`, `timeout_ms`),
+  covering a login needing more than one form (an OTP flow: submit an email,
+  then a code from a second form), a field's value resolved from `env` or a
+  `code_source` that polls an HTTP endpoint live rather than ever reading,
+  storing, or logging the code on the host.
