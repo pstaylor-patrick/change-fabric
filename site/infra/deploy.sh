@@ -30,6 +30,17 @@ aws s3 cp "$dist/index.html" "s3://$bucket/index.html" \
   --cache-control "public, max-age=60, must-revalidate" \
   --content-type "text/html"
 
+# The raw spec markdown is fetched directly by agents/tools, so serve it as
+# plain markdown text (not the octet-stream the sync would guess) with a short
+# cache so a corrected spec propagates.
+if compgen -G "$dist/spec/*.md" >/dev/null; then
+  for md in "$dist"/spec/*.md; do
+    aws s3 cp "$md" "s3://$bucket/spec/$(basename "$md")" \
+      --content-type "text/markdown; charset=utf-8" \
+      --cache-control "public, max-age=300, must-revalidate"
+  done
+fi
+
 echo "invalidating CloudFront $distribution"
 aws cloudfront create-invalidation --distribution-id "$distribution" --paths "/*" >/dev/null
 
