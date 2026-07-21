@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'securerandom'
 require 'tmpdir'
 require_relative 'change_lane'
 require_relative 'change_docker'
@@ -51,7 +52,8 @@ class ChangeLaneZap < ChangeLane
       network: @context.network,
       image: ChangeDocker::ZAP_IMAGE,
       args: [ 'zap-baseline.py', '-t', target, '-J', report, '-r', 'report.html' ],
-      mounts: { dir => '/zap/wrk' }
+      mounts: { dir => '/zap/wrk' },
+      name: "#{ChangeDocker::RESOURCE_PREFIX}zap-#{SecureRandom.hex(4)}"
     )
   end
 

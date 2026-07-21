@@ -20,15 +20,29 @@ fi
 bucket="$(terraform -chdir="$here" output -raw site_bucket)"
 distribution="$(terraform -chdir="$here" output -raw www_distribution_id)"
 
+# Icon files are referenced by static, unversioned filenames (no content hash),
+# so an immutable year-long cache leaves a browser stuck on a stale icon after
+# an update, with no HTTP-level trigger to ever refetch it. Give them the same
+# short must-revalidate cache as index.html.
+icon_files=(favicon.svg apple-touch-icon.png icon-192.png icon-512.png site.webmanifest)
+
 echo "syncing $dist -> s3://$bucket"
-# Hashed assets get a long cache; index.html must not, so it always reflects the
-# latest deploy.
+# Hashed assets get a long cache; index.html and the unversioned icon files
+# must not, so they always reflect the latest deploy.
 aws s3 sync "$dist" "s3://$bucket" --delete \
   --exclude index.html \
+  --exclude favicon.svg --exclude apple-touch-icon.png \
+  --exclude icon-192.png --exclude icon-512.png --exclude site.webmanifest \
   --cache-control "public, max-age=31536000, immutable"
 aws s3 cp "$dist/index.html" "s3://$bucket/index.html" \
   --cache-control "public, max-age=60, must-revalidate" \
   --content-type "text/html"
+for icon in "${icon_files[@]}"; do
+  if [ -f "$dist/$icon" ]; then
+    aws s3 cp "$dist/$icon" "s3://$bucket/$icon" \
+      --cache-control "public, max-age=60, must-revalidate"
+  fi
+done
 
 # The raw spec markdown is fetched directly by agents/tools, so serve it as
 # plain markdown text (not the octet-stream the sync would guess) with a short

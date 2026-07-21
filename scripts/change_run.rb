@@ -29,6 +29,7 @@ require_relative 'change_lane_browserless'
 # 2 on a setup failure (no docker, bad config, app never ready).
 class ChangeRun
   BROWSER_LANES = %w[a11y browserless].freeze
+  OUTPUT_TAIL_LINES = 40
   LANE_CLASSES = {
     'k6' => ChangeLaneK6, 'a11y' => ChangeLaneA11y,
     'zap' => ChangeLaneZap, 'browserless' => ChangeLaneBrowserless
@@ -37,7 +38,7 @@ class ChangeRun
   # Per-lane run context. Lanes talk only to this, never to the run internals:
   # the network to join, the default target url, the browser session (nil unless
   # a browser lane asked for one), and a logger.
-  Context = Struct.new(:network, :target_url, :browserless, :logger, keyword_init: true) do
+  Context = Struct.new(:network, :target_url, :health_url, :browserless, :logger, keyword_init: true) do
     def log(message) = logger.call(message)
   end
 
@@ -51,6 +52,7 @@ class ChangeRun
 
   def run
     return abort_setup('docker is not available') unless ChangeDocker.available?
+    return sweep_stale_resources if @scope == 'sweep'
 
     config = ChangeConfig.load(@config_path)
     lanes = resolve_lanes(config)
@@ -71,9 +73,20 @@ class ChangeRun
     OptionParser.new do |o|
       o.on('--config PATH') { |value| path = value }
     end.parse(argv.drop(1))
-    valid = %w[all] + ChangeConfig::LANES
+    valid = %w[all sweep] + ChangeConfig::LANES
     abort_and_exit("scope must be one of: #{valid.join(', ')}") unless valid.include?(scope)
     [ scope, path ]
+  end
+
+  # Force-removes any `pst-change-*` container or network left behind by a run
+  # that crashed before its own teardown ran. Takes no CHANGE.md, since it is
+  # meant to run standalone between runs, not as part of one.
+  def sweep_stale_resources
+    removed = ChangeDocker.sweep
+    removed[:containers].each { |name| log("[change] removed stale container: #{name}") }
+    removed[:networks].each { |name| log("[change] removed stale network: #{name}") }
+    log("[change] sweep: #{removed[:containers].size} container(s), #{removed[:networks].size} network(s) removed")
+    0
   end
 
   def resolve_lanes(config)
@@ -97,7 +110,10 @@ class ChangeRun
   end
 
   def with_context(config, network)
-    ctx_args = { network: network.name, target_url: config.boot.target_url, logger: method(:log) }
+    ctx_args = {
+      network: network.name, target_url: config.boot.target_url,
+      health_url: config.boot.health_url, logger: method(:log)
+    }
     if browser_needed?(config)
       ChangeDocker.with_browserless(network: network.name) do |session|
         yield Context.new(browserless: session, **ctx_args)
@@ -123,28 +139,68 @@ class ChangeRun
     return unless boot.up?
 
     log("[change] booting: #{boot.up}")
-    _out, status = Open3.capture2e(boot.up, chdir: repo_root)
-    abort_and_exit("boot command failed: #{boot.up}") unless status.success?
+    out, status = Open3.capture2e(boot_env(boot), boot.up, chdir: repo_root)
+    return if status.success?
+
+    abort_and_exit("boot command failed: #{boot.up}\n--- boot output (last #{OUTPUT_TAIL_LINES} lines) ---\n#{tail(out)}")
+  end
+
+  # Parses each configured boot.env_file (simple KEY=VALUE lines, no shell
+  # `source`, so no secret is ever echoed) and merges them into the inherited
+  # process environment, later files winning over earlier ones. This is the
+  # shell-level equivalent of `set -a; source .env.local; set +a`: it makes a
+  # compose `build.args:` entry's `${VAR}` interpolation resolve without the
+  # author having to pre-export anything. Fails fast, by name, when a declared
+  # file is missing.
+  def boot_env(boot)
+    files = boot.env_files
+    return {} if files.empty?
+
+    files.each_with_object({}) do |path, merged|
+      abort_and_exit("boot.env_file not found: #{path}") unless File.exist?(path)
+
+      merged.merge!(parse_env_file(path))
+    end
+  end
+
+  def parse_env_file(path)
+    File.readlines(path).each_with_object({}) do |line, env|
+      stripped = line.strip
+      next if stripped.empty? || stripped.start_with?('#')
+
+      key, value = stripped.delete_prefix('export ').split('=', 2)
+      next unless key && value
+
+      env[key.strip] = value.strip.gsub(/\A['"]|['"]\z/, '')
+    end
   end
 
   def boot_down(boot)
     return if boot.down.empty?
 
     log("[change] tearing down: #{boot.down}")
-    Open3.capture2e(boot.down, chdir: repo_root)
+    out, status = Open3.capture2e(boot.down, chdir: repo_root)
+    log("[change] teardown command failed: #{boot.down}\n--- teardown output (last #{OUTPUT_TAIL_LINES} lines) ---\n#{tail(out)}") unless status.success?
   end
 
   # Polls the health url from the host until it returns the expected status or
   # the timeout elapses. A run with no health url skips straight through, trusting
-  # the boot command to have blocked until ready.
+  # the boot command to have blocked until ready. Carries the last poll's own
+  # curl output into the timeout message, so "never became healthy" names the
+  # actual response (a connection refused, a wrong status, a TLS failure)
+  # instead of leaving the cause to be re-discovered by hand.
   def wait_healthy(boot)
     return if boot.health_url.empty?
 
     deadline = Time.now + boot.health_timeout
+    last_out = nil
     loop do
-      return if healthy?(boot)
+      ok, last_out = healthy?(boot)
+      return if ok
 
-      abort_and_exit("app never became healthy at #{boot.health_url}") if Time.now > deadline
+      if Time.now > deadline
+        abort_and_exit("app never became healthy at #{boot.health_url}\n--- last health check output ---\n#{tail(last_out)}")
+      end
       sleep 2
     end
   end
@@ -157,13 +213,21 @@ class ChangeRun
   # when set), so the check works against a local-CA https health url with no
   # extra configuration. A short per-attempt timeout keeps the outer deadline
   # loop responsive.
+  # Returns [ok?, output] so a caller giving up on the timeout can carry the
+  # last attempt's own diagnostic into its own message.
   def healthy?(boot)
     out, status = Open3.capture2e(
       'curl', '-sS', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '5', boot.health_url
     )
-    status.success? && out.strip.to_i == boot.health_status
-  rescue StandardError
-    false
+    [ status.success? && out.strip.to_i == boot.health_status, out ]
+  rescue StandardError => e
+    [ false, e.message ]
+  end
+
+  # A bounded tail of captured subprocess output, so a noisy build log stays
+  # readable while the line that actually explains the failure is still there.
+  def tail(out)
+    out.to_s.lines.last(OUTPUT_TAIL_LINES).join
   end
 
   def write_report(config, findings, lanes)

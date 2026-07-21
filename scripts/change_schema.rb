@@ -15,7 +15,7 @@
 # spec doc's changelog. A field-set change without a matching version bump, or a
 # version bump the doc does not reflect, is exactly what the drift test catches.
 module ChangeSchema
-  VERSION = '1.1.0'
+  VERSION = '1.2.0'
 
   # The four audit lanes, the authoritative list the config validator enforces.
   LANES = %w[k6 a11y zap browserless].freeze
@@ -35,6 +35,7 @@ module ChangeSchema
     'change_config.boot.health.url',
     'change_config.boot.health.expect_status',
     'change_config.boot.health.timeout_seconds',
+    'change_config.boot.env_file',
     'change_config.lanes.<lane>.enabled',
     'change_config.lanes.<lane>.base_url',
     'change_config.lanes.k6.script',

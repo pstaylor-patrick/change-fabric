@@ -30,10 +30,13 @@ module ChangeDocker
   end
 
   # Runs a one-shot container to completion and returns [stdout+stderr, ok?].
-  # `--rm` and the digest pin are enforced here so no lane can opt out. Extra
-  # args are the image plus its command.
-  def run(network:, image:, args:, env: {}, mounts: {})
+  # `--rm` and the digest pin are enforced here so no lane can opt out. `name`
+  # gets the `pst-change-` prefix every resource this platform creates carries,
+  # so a container orphaned by a crashed run (`--rm` never ran) is identifiable
+  # and reachable by `sweep`. Extra args are the image plus its command.
+  def run(network:, image:, args:, env: {}, mounts: {}, name: nil)
     cmd = [ 'docker', 'run', '--rm' ]
+    cmd += [ '--name', name ] if name
     cmd += [ '--network', network ] if network
     env.each { |key, value| cmd += [ '-e', "#{key}=#{value}" ] }
     mounts.each { |host, container| cmd += [ '-v', "#{host}:#{container}" ] }
@@ -84,6 +87,29 @@ module ChangeDocker
     cmd += [ '-p', "127.0.0.1:#{port}:3000", '-e', "TOKEN=#{token}", BROWSERLESS_IMAGE ]
     _out, status = Open3.capture2e(*cmd)
     raise 'failed to start browserless container' unless status.success?
+  end
+
+  # Prefix every ephemeral resource this platform creates carries, so a
+  # container or network orphaned by a run that crashed before its own
+  # teardown (a kill, an interrupted host) is identifiable and reclaimable.
+  RESOURCE_PREFIX = 'pst-change-'
+
+  # Force-removes any running container or existing network carrying the
+  # `pst-change-` prefix. Meant to run standalone, between runs, so every match
+  # is by definition not part of a run in progress. Returns the names removed.
+  def sweep
+    containers = matching_names('docker', 'ps', '-a', '--filter', "name=#{RESOURCE_PREFIX}", '--format', '{{.Names}}')
+    containers.each { |name| Open3.capture2e('docker', 'rm', '-f', name) }
+    networks = matching_names('docker', 'network', 'ls', '--filter', "name=#{RESOURCE_PREFIX}", '--format', '{{.Name}}')
+    networks.each { |name| Open3.capture2e('docker', 'network', 'rm', name) }
+    { containers: containers, networks: networks }
+  end
+
+  def matching_names(*cmd)
+    out, status = Open3.capture2e(*cmd)
+    return [] unless status.success?
+
+    out.split("\n").map(&:strip).reject(&:empty?)
   end
 
   # An OS-assigned free loopback port. Bind to 0 to let the kernel pick, read it

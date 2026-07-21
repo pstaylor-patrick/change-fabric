@@ -9,7 +9,7 @@ require_relative "../scripts/change_lane_k6"
 # surfaced: k6 --summary-export writes each threshold as a bare boolean that is
 # TRUE when breached and FALSE when held, so a held threshold must read as pass.
 class ChangeLaneK6Test < Minitest::Test
-  Ctx = Struct.new(:network, :target_url) do
+  Ctx = Struct.new(:network, :target_url, :health_url) do
     def browserless = nil
     def log(_message) = nil
   end
@@ -54,5 +54,25 @@ class ChangeLaneK6Test < Minitest::Test
 
   def test_metric_without_thresholds_yields_no_findings
     assert_empty findings_for("http_reqs" => { "count" => 3 })
+  end
+
+  # The dogfooding fix: a project whose health route is not "/health" (e.g.
+  # "/api/health") must not have the default script silently load-test a 404.
+  def test_env_defaults_health_path_from_the_boot_health_url
+    config = ChangeConfig::LaneConfig.new("k6", {}, "/repo")
+    ctx = Ctx.new("net", "http://app:3000", "http://localhost:3000/api/health")
+    assert_equal "/api/health", ChangeLaneK6.new(config, ctx).send(:env)["HEALTH_PATH"]
+  end
+
+  def test_env_leaves_health_path_unset_without_a_boot_health_url
+    config = ChangeConfig::LaneConfig.new("k6", {}, "/repo")
+    ctx = Ctx.new("net", "http://app:3000", nil)
+    refute ChangeLaneK6.new(config, ctx).send(:env).key?("HEALTH_PATH")
+  end
+
+  def test_env_prefers_an_explicitly_configured_health_path
+    config = ChangeConfig::LaneConfig.new("k6", { "env" => { "HEALTH_PATH" => "/healthz" } }, "/repo")
+    ctx = Ctx.new("net", "http://app:3000", "http://localhost:3000/api/health")
+    assert_equal "/healthz", ChangeLaneK6.new(config, ctx).send(:env)["HEALTH_PATH"]
   end
 end

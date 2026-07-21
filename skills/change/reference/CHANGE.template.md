@@ -10,6 +10,10 @@
 # separate config file: a repo can carry only this one file, with none of the
 # audit tools installed as its own dependencies, and the platform provides every
 # runner as an ephemeral, digest-pinned container.
+#
+# CHANGE.md must be self-contained: it must not cite or depend on another
+# tool's own internal conventions (a coding harness's config vocabulary, an
+# unrelated CLAUDE.md table). It is read by change-fabric alone.
 
 change_config:
   project: my-app                 # label used in the Desktop report filename
@@ -17,8 +21,38 @@ change_config:
   boot:
     # Command that brings the target app up. Run from the repo root. May be a
     # docker compose invocation or anything that ends with the app reachable.
+    #
+    # `up` must return promptly and leave the app running in the background; it
+    # is not waited on beyond its own exit. `docker compose up -d` already
+    # detaches. A foreground command (for example `pnpm dev`) blocks forever and
+    # the run hangs before the health check is ever reached: self-detach it
+    # first, for example `nohup pnpm dev >/tmp/app.log 2>&1 & echo $! >/tmp/app.pid`,
+    # with a matching `down` that kills the recorded pid.
+    #
+    # If the target's own compose file publishes a host port or container_name
+    # that collides with something already running on this host, fix it through
+    # the target's own supported mechanism (an env var the compose file reads
+    # for its port mapping, a dedicated audit compose profile) rather than
+    # editing the tracked compose file. A `docker-compose.override.yml` cannot
+    # remap a published port away: Compose concatenates `ports:` lists across
+    # base and override rather than replacing them, so the base port is still
+    # bound.
     up: docker compose up -d --build postgres migrate portal core
-    down: docker compose down     # teardown, always run after the sweep
+    # Repo-relative env file(s) parsed (simple KEY=VALUE lines, not shell
+    # `source`) and merged into the `up` command's own subprocess environment.
+    # Compose resolves a service's `build.args: { KEY: ${VAR} }` from your shell
+    # or a project-root .env, never from that service's own `env_file:`, so a
+    # build needing NEXT_PUBLIC_*-style build args fails inside the build tool
+    # with no docker-level warning unless VAR is already exported. Name the file
+    # here so change-fabric sources it before running `up`, instead of the
+    # author having to pre-export it. Omit if `up` needs no such vars.
+    env_file: .env.local
+    # Teardown, always run after the sweep. `docker compose down` alone leaves
+    # named volumes (a Postgres volume, for example) intact across runs, which
+    # is fine only when the app's seed data is fully idempotent. If a second run
+    # re-seeding on top of the first risks a constraint failure, tear the volume
+    # down too: `docker compose down -v`, at the cost of a slower next boot.
+    down: docker compose down
     # An existing docker network the runners join so they can reach app services
     # by name. Omit to have the platform create an ephemeral network; then
     # address the app from the runners via host.docker.internal.
@@ -30,6 +64,13 @@ change_config:
       # HOST-reachable url, polled from the host via curl. A local dev stack
       # behind a local CA (a Caddy dev cert) works: curl trusts the system store
       # and honors SSL_CERT_FILE/SSL_CERT_DIR if set.
+      #
+      # Prefer a published host port here (created by the same `up` command
+      # change-fabric ran) over a named host routed through a separately-running
+      # reverse proxy (a shared Caddy container, for example). The proxy is not
+      # part of this run's compose project, so a fresh ephemeral boot's
+      # container is never wired into it; the health poll gets no response even
+      # though the app itself came up healthy.
       url: http://localhost:3000/health
       expect_status: 200
       timeout_seconds: 120
@@ -44,6 +85,8 @@ change_config:
         BASE_URL: http://myapp-core:3000
         VUS: "5"
         DURATION: "30s"
+        # HEALTH_PATH: /api/health   # the built-in default script's target route;
+        # omit to default it to boot.health.url's own path (below)
       thresholds:                 # applied to the built-in default script
         http_req_failed: "rate<0.01"
         http_req_duration: "p(95)<500"

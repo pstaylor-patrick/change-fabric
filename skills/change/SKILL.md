@@ -60,7 +60,10 @@ SHA; the lanes read the `change_config:` block.
    not change-fabric-integrated yet; say so and stop rather than guessing an
    audit surface. Scoping a target from a description follows pst:qa's phase 1-5
    shape only where the config leaves a choice open; the config is the source of
-   truth for what to audit.
+   truth for what to audit. `CHANGE.md` must be self-contained: reject or flag a
+   config that cites another tool's own internal conventions (a coding harness's
+   config vocabulary, an unrelated CLAUDE.md table) instead of stating the
+   target app's own boot and audit details directly.
 3. **Run the sweep.** From the target repo root:
    `ruby ~/.claude/pst/bin/change_run.rb all`. This boots the app per the
    config, waits for its health signal, stands up the ephemeral runners
@@ -137,9 +140,20 @@ lane has no standalone skill; it runs as part of `pst:change`.
 
 - Docker unavailable, or a runner image cannot be pulled: `change_run.rb` exits
   2 and names the cause. Report it and stop; never fall back to a host daemon.
-- No `CHANGE.md` with a `change_config:` block: the repo is not integrated. Say
-  so; do not invent a target surface.
-- The app never becomes healthy: exit 2 with the health url. Report the timeout,
-  do not proceed to the lanes.
+- No `CHANGE.md` with a `change_config:` block: the repo is not integrated. The
+  error names the template and spec doc to author one against. Run
+  `ruby ~/.claude/pst/bin/change_config.rb doctor` against a `CHANGE.md` in
+  progress to validate it before a full sweep.
+- `boot.up` never returns: it must leave the app running in the background, not
+  block. A foreground dev-server command has to self-detach (see the template's
+  `boot.up` comment); a blocking command hangs the run before health is ever
+  polled.
+- The app never becomes healthy: exit 2 with the health url and the tail of the
+  boot command's and the health poll's own output, so the real cause (a missing
+  env var, a build failure, an unreachable proxy) is visible instead of hidden
+  behind a bare timeout.
 - A browser lane runs but browserless never becomes ready: the lane records a
   failing finding rather than crashing the whole run.
+- Leftover `pst-change-*` containers or networks from a run that crashed before
+  its teardown: `ruby ~/.claude/pst/bin/change_run.rb sweep` force-removes any
+  not owned by the current run.

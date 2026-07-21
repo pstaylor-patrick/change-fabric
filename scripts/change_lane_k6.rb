@@ -2,7 +2,9 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'securerandom'
 require 'tmpdir'
+require 'uri'
 require_relative 'change_lane'
 require_relative 'change_docker'
 require_relative 'change_findings'
@@ -77,19 +79,36 @@ class ChangeLaneK6 < ChangeLane
       image: ChangeDocker::K6_IMAGE,
       args: [ 'run', '--summary-export', "/work/#{File.basename(summary)}", "/work/#{script}" ],
       env: env,
-      mounts: { dir => '/work' }
+      mounts: { dir => '/work' },
+      name: "#{ChangeDocker::RESOURCE_PREFIX}k6-#{SecureRandom.hex(4)}"
     )
   end
 
   # Lane env, defaulting BASE_URL to the run's target so the default script has a
-  # host even when the project omits it, and mapping any configured thresholds to
-  # the env knobs the default script reads.
+  # host even when the project omits it, mapping any configured thresholds to
+  # the env knobs the default script reads, and defaulting HEALTH_PATH to
+  # boot.health.url's own path so the default script load-tests the same route
+  # the health check already proved reachable, instead of a second,
+  # independently-guessed "/health" that silently 404s on a repo whose route is
+  # named differently (e.g. "/api/health").
   def env
     base = { 'BASE_URL' => base_url }
     thresholds = @config['thresholds'] || {}
     base['THRESHOLD_REQ_FAILED'] = thresholds['http_req_failed'] if thresholds['http_req_failed']
     base['THRESHOLD_REQ_DURATION'] = thresholds['http_req_duration'] if thresholds['http_req_duration']
-    base.merge(@config.env)
+    configured = @config.env
+    base['HEALTH_PATH'] = default_health_path if default_health_path && !configured.key?('HEALTH_PATH')
+    base.merge(configured)
+  end
+
+  def default_health_path
+    url = @context.health_url.to_s
+    return nil if url.empty?
+
+    path = URI(url).path
+    path.empty? ? nil : path
+  rescue URI::InvalidURIError
+    nil
   end
 
   def findings(summary, out, status)

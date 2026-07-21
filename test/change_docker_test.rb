@@ -50,4 +50,22 @@ class ChangeDockerTest < Minitest::Test
     _out, status = Open3.capture2e("docker", "network", "inspect", captured.name)
     refute status.success?, "ephemeral network should be removed after the block"
   end
+
+  # The dogfooding fix: a run that crashes before its own teardown leaves a
+  # `pst-change-*` container or network behind, with no way to reclaim it.
+  def test_sweep_removes_an_orphaned_container_and_network
+    skip "docker not available" unless ChangeDocker.available?
+
+    network = "pst-change-#{SecureRandom.hex(4)}"
+    Open3.capture2e("docker", "network", "create", network)
+    container = "pst-change-zap-#{SecureRandom.hex(4)}"
+    Open3.capture2e("docker", "run", "-d", "--name", container, "alpine", "sleep", "60")
+
+    removed = ChangeDocker.sweep
+
+    assert_includes removed[:containers], container
+    assert_includes removed[:networks], network
+    _out, status = Open3.capture2e("docker", "inspect", container)
+    refute status.success?, "swept container should be gone"
+  end
 end

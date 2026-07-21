@@ -26,16 +26,63 @@ class ChangeConfig
   # documented schema can never name a different set.
   LANES = ChangeSchema::LANES
 
+  TEMPLATE_DOC = 'skills/change/reference/CHANGE.template.md'
+  SPEC_DOC = 'skills/change/reference/CHANGE-frontmatter-spec.md'
+  REFERENCE_HINT = "See the template at #{TEMPLATE_DOC} and the field spec at #{SPEC_DOC}. " \
+                   "Everything (change_config: and change_policy:) belongs in this file's YAML " \
+                   'frontmatter; there is no separate config file.'
+  PLACEHOLDER_HINT = 'This looks like a pre-1.0 placeholder layout: config used to live in a ' \
+                     'separate .pst file, but the shipped platform inlines it into CHANGE.md ' \
+                     'frontmatter. Migrate the config into the frontmatter block here.'
+
   def self.load(path)
-    raise ConfigError, "CHANGE.md not found: #{path}" unless File.exist?(path)
+    raise ConfigError, "CHANGE.md not found: #{path}. #{REFERENCE_HINT}" unless File.exist?(path)
 
     front = ChangeFrontmatter.parse_file(path)
     config = front['change_config']
-    unless config.is_a?(Hash)
-      raise ConfigError, "CHANGE.md has no change_config: frontmatter block (or it is not a mapping): #{path}"
-    end
+    raise ConfigError, missing_config_message(path) unless config.is_a?(Hash)
 
     new(config, File.dirname(path))
+  end
+
+  def self.missing_config_message(path)
+    message = "CHANGE.md has no change_config: frontmatter block (or it is not a mapping): #{path}. #{REFERENCE_HINT}"
+    message += " #{PLACEHOLDER_HINT}" if placeholder_era_layout?(path)
+    message
+  end
+
+  # Narrow, string-based detection so it only fires on the specific pre-1.0
+  # shape (a sibling .pst config file, or CHANGE.md prose still pointing at
+  # one) and never misfires on a valid file that simply lacks change_config:.
+  def self.placeholder_era_layout?(path)
+    dir = File.dirname(path)
+    return true if File.exist?(File.join(dir, '.pst', 'change-fabric.yml'))
+    return true if File.exist?(File.join(dir, '.pst', 'change.yml'))
+
+    body = File.read(path)
+    body.include?('placeholder: true') || body.include?('.pst/change-fabric.yml') || body.include?('.pst/change.yml')
+  rescue StandardError
+    false
+  end
+
+  # Loads and reports on a CHANGE.md without running any lane: a fast
+  # well-formed check an author runs while iterating, before a full sweep.
+  def self.doctor(path)
+    config = load(path)
+    boot = config.boot
+    lines = [
+      "CHANGE.md OK: #{path}",
+      "project: #{config.project}",
+      "enabled lanes: #{config.enabled_lanes.join(', ')}",
+      "boot.up: #{boot.up? ? boot.up : '(none, assumes the app is already running)'}",
+      "boot.down: #{boot.down.empty? ? '(none)' : boot.down}"
+    ]
+    if boot.health_url.empty?
+      lines << 'warning: no boot.health.url set; the run trusts boot.up to block until the app is ready'
+    else
+      lines << "boot.health.url: #{boot.health_url}"
+    end
+    lines.join("\n")
   end
 
   # `dir` is the CHANGE.md directory, i.e. the repo root, used to resolve
@@ -47,7 +94,7 @@ class ChangeConfig
   end
 
   def project = @raw.fetch('project', 'project').to_s
-  def boot = Boot.new(@raw['boot'] || {})
+  def boot = Boot.new(@raw['boot'] || {}, @dir)
 
   # The repo root: the directory holding CHANGE.md.
   def repo_root = @dir
@@ -82,7 +129,10 @@ class ChangeConfig
   # is polled from the host, so its url must be host-reachable even though the
   # lane `base_url`s address services by their in-network name.
   class Boot
-    def initialize(raw) = @raw = raw
+    def initialize(raw, dir)
+      @raw = raw
+      @dir = dir
+    end
 
     def up = @raw['up'].to_s
     def down = @raw['down'].to_s
@@ -92,6 +142,14 @@ class ChangeConfig
     def health_status = Integer(@raw.dig('health', 'expect_status') || 200)
     def health_timeout = Integer(@raw.dig('health', 'timeout_seconds') || 120)
     def up? = !up.empty?
+
+    # Repo-relative path(s) of env file(s) to parse and pass into the boot
+    # subprocess environment, letting a project's own ${VAR} build-arg
+    # interpolation (a compose `build.args:` entry, which never reads a
+    # service's `env_file:`) resolve without pre-exporting anything. Accepts
+    # a single path or a list; later files win over earlier ones. Resolved
+    # against the CHANGE.md directory, same as a lane's repo-relative paths.
+    def env_files = Array(@raw['env_file']).map { |path| File.expand_path(path.to_s, @dir) }
   end
 
   # One lane's settings, read through named accessors so a lane script never digs
@@ -117,5 +175,21 @@ class ChangeConfig
     end
 
     def base_url(fallback) = (@raw['base_url'] || fallback).to_s
+  end
+end
+
+if __FILE__ == $PROGRAM_NAME
+  if ARGV.first == 'doctor'
+    config_flag = ARGV.index('--config')
+    path = config_flag ? ARGV[config_flag + 1] : ChangeConfig::DEFAULT_PATH
+    begin
+      puts ChangeConfig.doctor(path)
+    rescue ChangeConfig::ConfigError => e
+      warn "[change] setup error: #{e.message}"
+      exit 2
+    end
+  else
+    warn 'usage: change_config.rb doctor [--config PATH]'
+    exit 1
   end
 end

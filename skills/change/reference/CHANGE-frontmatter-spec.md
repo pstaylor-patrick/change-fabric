@@ -1,6 +1,6 @@
 # CHANGE.md frontmatter specification
 
-Schema version: 1.1.0
+Schema version: 1.2.0
 
 Status: stable. This is the golden reference for authoring a repo's `CHANGE.md`
 frontmatter. A maintainer or an AI agent creating a new repo's `CHANGE.md` reads
@@ -22,6 +22,9 @@ files that a tool or a newcomer reads to operate correctly in a specific repo:
 Like those, it is a single conventionally-named root file, kept concise and
 current, treated as a first-class part of the repo rather than an afterthought,
 and written so a newcomer (human or agent) gets correct behavior from reading it.
+It must also be self-contained: it must not cite or depend on another tool's own
+internal conventions (a coding harness's config vocabulary, an unrelated
+CLAUDE.md table), since change-fabric reads only this file.
 Its substance is the concrete governance FAQ (promotion rules, self-review
 policy, admin-bypass conditions) in the prose body, plus the two machine-readable
 frontmatter blocks this spec covers.
@@ -70,17 +73,18 @@ up and confirm it is ready; `lanes` describes what to audit.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `change_config.project` | string | no (default `project`) | Label used in the Desktop report filename. |
-| `change_config.boot.up` | string | no | Command that brings the app up, run from the repo root. Omit to assume the app is already running. |
-| `change_config.boot.down` | string | no | Teardown command, always run after the sweep. |
+| `change_config.boot.up` | string | no | Command that brings the app up, run from the repo root. Omit to assume the app is already running. Must return promptly and leave the app running in the background: a foreground command (`pnpm dev`) has to be self-detached (`nohup ... & echo $! >pidfile`, with `down` killing the recorded pid), since the run never proceeds past a command that blocks. |
+| `change_config.boot.down` | string | no | Teardown command, always run after the sweep. `docker compose down` alone leaves named volumes intact across runs; add `-v` when the app's seed data is not fully idempotent, at the cost of a slower next boot. |
 | `change_config.boot.network` | string | no | An existing docker network the runners join to reach app services by name. Omit to create an ephemeral network and reach the app via `host.docker.internal`. |
 | `change_config.boot.target_url` | string | no | In-network base url the lanes default to (service-name form on a compose network). A per-lane `base_url` overrides it. |
-| `change_config.boot.health.url` | string | no | Host-reachable url polled from the host (via curl, so a local-CA dev cert is trusted). Omit to skip the health wait. |
+| `change_config.boot.health.url` | string | no | Host-reachable url polled from the host (via curl, so a local-CA dev cert is trusted). Omit to skip the health wait. Prefer a published host port (created by the same `boot.up`) over a named host routed through a separately-running reverse proxy: the proxy is not part of this run's compose project, so a fresh ephemeral boot's container is never wired into it and the poll gets no response even though the app itself is healthy. |
 | `change_config.boot.health.expect_status` | integer | no (default 200) | HTTP status that means healthy. |
 | `change_config.boot.health.timeout_seconds` | integer | no (default 120) | How long to wait for health before failing the run. |
+| `change_config.boot.env_file` | string or list of string | no | Repo-relative path(s) of env file(s) (simple `KEY=VALUE` lines, not shell `source`) parsed and merged into `boot.up`'s subprocess environment, later files winning over earlier ones and overriding the inherited environment for that subprocess. Lets a compose `build.args:` entry's `${VAR}` interpolation resolve (Compose reads `build.args` from the shell/`.env`, never from a service's own `env_file:`) without pre-exporting anything. A missing declared file fails the run by name. |
 | `change_config.lanes.<lane>.enabled` | boolean | no (default true) | Whether this lane runs. Set false, or omit the lane, to skip it. |
 | `change_config.lanes.<lane>.base_url` | string | no | Per-lane override of `boot.target_url`. |
 | `change_config.lanes.k6.script` | string | no | Repo-relative k6 script. Omit for the built-in light-load default. |
-| `change_config.lanes.k6.env` | map | no | Environment variables passed to the k6 container (e.g. `BASE_URL`, `VUS`, `DURATION`). |
+| `change_config.lanes.k6.env` | map | no | Environment variables passed to the k6 container (e.g. `BASE_URL`, `VUS`, `DURATION`). The built-in default script also reads `HEALTH_PATH` for the route it hits; when omitted here it defaults to `boot.health.url`'s own path, so the load test targets the same route the health check already proved reachable rather than an independently-guessed `/health`. |
 | `change_config.lanes.k6.thresholds.http_req_failed` | string | no | k6 threshold expression applied to the built-in default script (e.g. `rate<0.01`). |
 | `change_config.lanes.k6.thresholds.http_req_duration` | string | no | k6 threshold expression applied to the built-in default script (e.g. `p(95)<500`). |
 | `change_config.lanes.k6.scenario.window` | string | no (default `per minute`) | The unit the expected peak is expressed in. |
@@ -206,6 +210,10 @@ Version scheme (semver for the schema):
 
 ### Changelog
 
+- 1.2.0: adds `boot.env_file`, a repo-relative env file (or list) parsed and
+  merged into `boot.up`'s subprocess environment, so a compose `build.args:`
+  entry's `${VAR}` interpolation resolves without pre-exporting anything. A
+  new optional field, no field removed or renamed.
 - 1.1.0: adds authenticated browserless checks and Figma visual alignment to
   the browserless lane. `routes[]` accepts a mapping (`path`, `auth`, `figma`)
   alongside the existing plain-string form; a new `auth:` block configures a
